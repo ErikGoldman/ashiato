@@ -32,10 +32,6 @@
 #include <utility>
 #include <vector>
 
-namespace ashiato::sync {
-class ReplicationServer;
-}
-
 #ifndef ASHIATO_RUNTIME_REGISTRY_ACCESS_CHECKING
 #ifdef NDEBUG
 #define ASHIATO_RUNTIME_REGISTRY_ACCESS_CHECKING 0
@@ -485,7 +481,6 @@ enum class PrimitiveType {
 class Registry {
     friend class Orchestrator;
     friend class JobGraph;
-    friend class ashiato::sync::ReplicationServer;
 
 public:
     static constexpr std::uint32_t invalid_index = std::numeric_limits<std::uint32_t>::max();
@@ -1676,28 +1671,30 @@ private:
         return key;
     }
 
-    template <typename T>
-    void append_view_component_key(std::vector<std::uint32_t>& key) const {
+    template <typename T, std::size_t N>
+    void append_view_component_key(std::array<std::uint32_t, N>& key, std::size_t& key_count) const {
         if constexpr (!detail::is_singleton_query<T>::value) {
-            key.push_back(entity_index(registered_component<detail::component_query_t<T>>()));
+            key[key_count++] = entity_index(registered_component<detail::component_query_t<T>>());
         }
     }
 
     template <typename... Components>
     GroupRecord* best_group_for_view() {
-        std::vector<std::uint32_t> key;
-        key.reserve(sizeof...(Components));
-        (append_view_component_key<Components>(key), ...);
-        if (key.empty()) {
+        std::array<std::uint32_t, sizeof...(Components)> key{};
+        std::size_t key_count = 0;
+        (append_view_component_key<Components>(key, key_count), ...);
+        if (key_count == 0) {
             return nullptr;
         }
 
-        std::sort(key.begin(), key.end());
-        key.erase(std::unique(key.begin(), key.end()), key.end());
+        auto key_begin = key.begin();
+        auto key_end = key_begin + static_cast<std::ptrdiff_t>(key_count);
+        std::sort(key_begin, key_end);
+        key_end = std::unique(key_begin, key_end);
 
         GroupRecord* best = nullptr;
         for (const auto& group : group_index_.groups) {
-            if (!includes_all(key, group->owned)) {
+            if (!std::includes(key_begin, key_end, group->owned.begin(), group->owned.end())) {
                 continue;
             }
             if (best == nullptr ||
