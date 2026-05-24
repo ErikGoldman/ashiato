@@ -25,6 +25,7 @@ option(ASHIATO_BUILD_BENCHMARKS "Build Google Benchmark suites" OFF)
 option(ASHIATO_BUILD_STATIC_LIBRARY_ONLY "Build only the Ashiato ECS static library target" OFF)
 option(ASHIATO_ENABLE_COVERAGE "Build Ashiato ECS targets with coverage instrumentation" OFF)
 option(ASHIATO_ENABLE_DEBUG_SERVER "Build the optional Ashiato ECS local debug GraphQL server" OFF)
+option(ASHIATO_ENABLE_SERIALIZATION_TRACING "Build serialization payload trace capture helpers" OFF)
 option(ASHIATO_INSTALL "Install Ashiato ECS library and CMake package files" ${ashiato_is_top_level})
 
 if(ASHIATO_BUILD_STATIC_LIBRARY_ONLY)
@@ -80,6 +81,12 @@ if(ASHIATO_ENABLE_DEBUG_SERVER)
     )
 endif()
 
+if(ASHIATO_ENABLE_SERIALIZATION_TRACING)
+    list(APPEND ashiato_test_sources
+        src/ashiato_serialization_trace.test.cpp
+    )
+endif()
+
 add_library(ashiato STATIC)
 
 target_sources(ashiato
@@ -94,6 +101,10 @@ target_compile_features(ashiato PUBLIC cxx_std_17)
 
 if(ASHIATO_ENABLE_DEBUG_SERVER)
     target_compile_definitions(ashiato PUBLIC ASHIATO_ENABLE_DEBUG_SERVER=1)
+endif()
+
+if(ASHIATO_ENABLE_SERIALIZATION_TRACING)
+    target_compile_definitions(ashiato PUBLIC ASHIATO_ENABLE_SERIALIZATION_TRACING=1)
 endif()
 
 target_include_directories(ashiato

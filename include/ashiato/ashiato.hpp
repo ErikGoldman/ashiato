@@ -51,6 +51,7 @@ struct component_type_key {
 };
 
 class ComponentSerializationRegistry;
+struct ComponentSerializationContext;
 class PersistentSnapshotAccess;
 
 namespace detail {
@@ -351,9 +352,197 @@ struct SnapshotComponentOptions {
 
 class Registry;
 
+#ifdef ASHIATO_ENABLE_SERIALIZATION_TRACING
+struct SerializationTraceScope {
+    std::uint32_t id = 0;
+    std::uint32_t parent = UINT32_MAX;
+    std::string name;
+    std::uint64_t begin_bits = 0;
+    std::uint64_t end_bits = 0;
+    std::uint64_t payload_bits = 0;
+};
+
+class SerializationTraceCapture {
+public:
+    explicit SerializationTraceCapture(bool active = true, const BitBuffer* target = nullptr, const char* root_name = nullptr)
+        : target_(target),
+          active_(active) {
+        if (target_ != nullptr) {
+            last_target_bits_ = static_cast<std::uint64_t>(target_->bit_size());
+        }
+        if (active_ && root_name != nullptr) {
+            (void)push_scope(root_name);
+        }
+    }
+
+    SerializationTraceCapture(const SerializationTraceCapture&) = delete;
+    SerializationTraceCapture& operator=(const SerializationTraceCapture&) = delete;
+
+    bool active() const noexcept { return active_; }
+    void set_active(bool active) noexcept { active_ = active; }
+    const std::vector<SerializationTraceScope>& scopes() const noexcept { return scopes_; }
+    std::vector<SerializationTraceScope>& scopes() noexcept { return scopes_; }
+    std::uint64_t wire_bits() const noexcept { return target_bits(); }
+    std::uint64_t payload_bits() const noexcept {
+        return scopes_.empty() ? 0U : scopes_.front().payload_bits;
+    }
+
+    void set_target(const BitBuffer* target) noexcept {
+        if (target_ != nullptr) {
+            last_target_bits_ = static_cast<std::uint64_t>(target_->bit_size());
+        }
+        target_ = target;
+        if (target_ != nullptr) {
+            last_target_bits_ = static_cast<std::uint64_t>(target_->bit_size());
+        }
+    }
+
+    void finish() {
+        while (!stack_.empty()) {
+            pop_scope(stack_.back());
+        }
+    }
+
+    void truncate_to_bits(std::uint64_t bit_size) {
+        if (!active_) {
+            return;
+        }
+        last_target_bits_ = bit_size;
+        if (target_ != nullptr && static_cast<std::uint64_t>(target_->bit_size()) < bit_size) {
+            last_target_bits_ = static_cast<std::uint64_t>(target_->bit_size());
+        }
+        while (!stack_.empty()) {
+            const std::uint32_t id = stack_.back();
+            if (id >= scopes_.size()) {
+                stack_.pop_back();
+                continue;
+            }
+            const SerializationTraceScope& scope = scopes_[id];
+            if (scope.begin_bits >= bit_size) {
+                stack_.pop_back();
+                continue;
+            }
+            break;
+        }
+
+        std::vector<std::uint32_t> old_to_new(scopes_.size(), UINT32_MAX);
+        std::vector<SerializationTraceScope> kept_scopes;
+        kept_scopes.reserve(scopes_.size());
+        for (const SerializationTraceScope& scope : scopes_) {
+            if (scope.begin_bits >= bit_size || scope.id >= old_to_new.size()) {
+                continue;
+            }
+            old_to_new[scope.id] = static_cast<std::uint32_t>(kept_scopes.size());
+            kept_scopes.push_back(scope);
+        }
+        scopes_ = std::move(kept_scopes);
+        for (std::uint32_t index = 0; index < scopes_.size(); ++index) {
+            SerializationTraceScope& scope = scopes_[index];
+            scope.id = index;
+            scope.end_bits = std::min(scope.end_bits, bit_size);
+            scope.payload_bits = scope.end_bits >= scope.begin_bits ? scope.end_bits - scope.begin_bits : 0U;
+            if (scope.parent != UINT32_MAX) {
+                scope.parent = scope.parent < old_to_new.size() ? old_to_new[scope.parent] : UINT32_MAX;
+            }
+        }
+
+        std::vector<std::uint32_t> kept_stack;
+        kept_stack.reserve(stack_.size());
+        for (const std::uint32_t id : stack_) {
+            if (id < old_to_new.size() && old_to_new[id] != UINT32_MAX) {
+                kept_stack.push_back(old_to_new[id]);
+            }
+        }
+        stack_ = std::move(kept_stack);
+    }
+
+    std::uint32_t push_scope(const char* name) {
+        if (!active_) {
+            return UINT32_MAX;
+        }
+        SerializationTraceScope scope;
+        scope.id = static_cast<std::uint32_t>(scopes_.size());
+        scope.parent = stack_.empty() ? UINT32_MAX : stack_.back();
+        scope.name = name != nullptr ? name : "";
+        scope.begin_bits = target_bits();
+        scope.end_bits = scope.begin_bits;
+        scopes_.push_back(std::move(scope));
+        stack_.push_back(scopes_.back().id);
+        return scopes_.back().id;
+    }
+
+    void pop_scope(std::uint32_t id) {
+        if (!active_ || id == UINT32_MAX || id >= scopes_.size()) {
+            return;
+        }
+        SerializationTraceScope& scope = scopes_[id];
+        scope.end_bits = target_bits();
+        last_target_bits_ = scope.end_bits;
+        scope.payload_bits = scope.end_bits >= scope.begin_bits ? scope.end_bits - scope.begin_bits : 0U;
+        if (!stack_.empty() && stack_.back() == id) {
+            stack_.pop_back();
+        } else {
+            stack_.erase(std::remove(stack_.begin(), stack_.end(), id), stack_.end());
+        }
+    }
+
+private:
+    std::uint64_t target_bits() const noexcept {
+        return target_ != nullptr ? static_cast<std::uint64_t>(target_->bit_size()) : last_target_bits_;
+    }
+
+    const BitBuffer* target_ = nullptr;
+    std::vector<SerializationTraceScope> scopes_;
+    std::vector<std::uint32_t> stack_;
+    std::uint64_t last_target_bits_ = 0;
+    bool active_ = true;
+};
+
+struct ComponentSerializationContext {
+    void* userContext = nullptr;
+    SerializationTraceCapture* payloadTrace = nullptr;
+};
+
+class ScopedSerializationTraceScope {
+public:
+    ScopedSerializationTraceScope(SerializationTraceCapture* capture, const char* name)
+        : capture_(capture) {
+        if (capture_ != nullptr && capture_->active()) {
+            id_ = capture_->push_scope(name);
+        }
+    }
+
+    ScopedSerializationTraceScope(ComponentSerializationContext& context, const char* name)
+        : ScopedSerializationTraceScope(context.payloadTrace, name) {}
+
+    ~ScopedSerializationTraceScope() {
+        if (capture_ != nullptr && capture_->active()) {
+            capture_->pop_scope(id_);
+        }
+    }
+
+    ScopedSerializationTraceScope(const ScopedSerializationTraceScope&) = delete;
+    ScopedSerializationTraceScope& operator=(const ScopedSerializationTraceScope&) = delete;
+
+private:
+    SerializationTraceCapture* capture_ = nullptr;
+    std::uint32_t id_ = UINT32_MAX;
+};
+
+#define ASHIATO_SERIALIZATION_TRACE_SCOPE(name) \
+    ::ashiato::ScopedSerializationTraceScope ASHIATO_SERIALIZATION_TRACE_SCOPE_CONCAT(_ashiato_serialization_trace_scope_, __LINE__)(context, name)
+#define ASHIATO_SERIALIZATION_TRACE_SCOPE_WITH_CONTEXT(trace_context, name) \
+    ::ashiato::ScopedSerializationTraceScope ASHIATO_SERIALIZATION_TRACE_SCOPE_CONCAT(_ashiato_serialization_trace_scope_, __LINE__)(&(trace_context), name)
+#define ASHIATO_SERIALIZATION_TRACE_SCOPE_CONCAT(a, b) ASHIATO_SERIALIZATION_TRACE_SCOPE_CONCAT_INNER(a, b)
+#define ASHIATO_SERIALIZATION_TRACE_SCOPE_CONCAT_INNER(a, b) a##b
+#else
 struct ComponentSerializationContext {
     void* userContext = nullptr;
 };
+
+#define ASHIATO_SERIALIZATION_TRACE_SCOPE(name) ((void)0)
+#define ASHIATO_SERIALIZATION_TRACE_SCOPE_WITH_CONTEXT(trace_context, name) ((void)0)
+#endif
 
 struct ComponentSerializationOps {
     using QuantizeFn = void (*)(const void*, std::uint8_t*);
