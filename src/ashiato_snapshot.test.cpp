@@ -22,7 +22,11 @@ struct CountingPositionTraits {
         return value;
     }
 
-    static void serialize(const Quantized* previous, const Quantized& current, ashiato::BitBuffer& out) {
+    static void serialize(
+        const Quantized* previous,
+        const Quantized& current,
+        ashiato::BitBuffer& out,
+        ashiato::ComponentSerializationContext&) {
         ++serialize_calls;
         if (previous == nullptr) {
             out.push_bits(current.x, 32U);
@@ -33,7 +37,11 @@ struct CountingPositionTraits {
         out.push_bits(current.y - previous->y, 16U);
     }
 
-    static bool deserialize(ashiato::BitBuffer& in, const Quantized* previous, Quantized& out) {
+    static bool deserialize(
+        ashiato::BitBuffer& in,
+        const Quantized* previous,
+        Quantized& out,
+        ashiato::ComponentSerializationContext&) {
         ++deserialize_calls;
         if (previous == nullptr) {
             out.x = static_cast<int>(in.read_bits(32U));
@@ -50,7 +58,7 @@ int CountingPositionTraits::serialize_calls = 0;
 int CountingPositionTraits::deserialize_calls = 0;
 
 struct UnreadPositionTraits : CountingPositionTraits {
-    static bool deserialize(ashiato::BitBuffer&, const Quantized*, Quantized& out) {
+    static bool deserialize(ashiato::BitBuffer&, const Quantized*, Quantized& out, ashiato::ComponentSerializationContext&) {
         out = Position{};
         return true;
     }
@@ -85,13 +93,21 @@ struct OverAlignedPersistentTraits {
         return OverAlignedPersistentComponent{static_cast<int>(value.value)};
     }
 
-    static void serialize(const Quantized* previous, const Quantized& current, ashiato::BitBuffer& out) {
+    static void serialize(
+        const Quantized* previous,
+        const Quantized& current,
+        ashiato::BitBuffer& out,
+        ashiato::ComponentSerializationContext&) {
         all_aligned = all_aligned && is_aligned(previous) && is_aligned(&current);
         const std::int32_t delta = previous == nullptr ? current.value : current.value - previous->value;
         out.push_bits(delta, 32U);
     }
 
-    static bool deserialize(ashiato::BitBuffer& in, const Quantized* previous, Quantized& out) {
+    static bool deserialize(
+        ashiato::BitBuffer& in,
+        const Quantized* previous,
+        Quantized& out,
+        ashiato::ComponentSerializationContext&) {
         all_aligned = all_aligned && is_aligned(previous) && is_aligned(&out);
         const auto delta = static_cast<std::int32_t>(in.read_bits(32U));
         out.value = previous == nullptr ? delta : previous->value + delta;
@@ -622,11 +638,11 @@ TEST_CASE("component serialization ops use raw quantized bytes and user context"
     int context_calls = 0;
     ashiato::ComponentSerializationContext context{&context_calls};
     ashiato::BitBuffer payload;
-    ops.serialize(nullptr, quantized.data(), payload, &context);
+    ops.serialize(nullptr, quantized.data(), payload, context);
     REQUIRE(context_calls == 1);
 
     std::array<std::uint8_t, sizeof(Position)> decoded{};
-    REQUIRE(ops.deserialize(payload, nullptr, decoded.data(), &context));
+    REQUIRE(ops.deserialize(payload, nullptr, decoded.data(), context));
     REQUIRE(context_calls == 11);
 
     Position restored{};

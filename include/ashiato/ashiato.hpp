@@ -532,7 +532,7 @@ private:
 #define ASHIATO_SERIALIZATION_TRACE_SCOPE(name) \
     ::ashiato::ScopedSerializationTraceScope ASHIATO_SERIALIZATION_TRACE_SCOPE_CONCAT(_ashiato_serialization_trace_scope_, __LINE__)(context, name)
 #define ASHIATO_SERIALIZATION_TRACE_SCOPE_WITH_CONTEXT(trace_context, name) \
-    ::ashiato::ScopedSerializationTraceScope ASHIATO_SERIALIZATION_TRACE_SCOPE_CONCAT(_ashiato_serialization_trace_scope_, __LINE__)(&(trace_context), name)
+    ::ashiato::ScopedSerializationTraceScope ASHIATO_SERIALIZATION_TRACE_SCOPE_CONCAT(_ashiato_serialization_trace_scope_, __LINE__)(trace_context, name)
 #define ASHIATO_SERIALIZATION_TRACE_SCOPE_CONCAT(a, b) ASHIATO_SERIALIZATION_TRACE_SCOPE_CONCAT_INNER(a, b)
 #define ASHIATO_SERIALIZATION_TRACE_SCOPE_CONCAT_INNER(a, b) a##b
 #else
@@ -552,12 +552,12 @@ struct ComponentSerializationOps {
         const std::uint8_t*,
         const std::uint8_t*,
         BitBuffer&,
-        ComponentSerializationContext*);
+        ComponentSerializationContext&);
     using DeserializeFn = bool (*)(
         BitBuffer&,
         const std::uint8_t*,
         std::uint8_t*,
-        ComponentSerializationContext*);
+        ComponentSerializationContext&);
 
     std::string name;
     Entity component;
@@ -586,14 +586,22 @@ struct ComponentSerializationTraits {
         return value;
     }
 
-    static void serialize(const Quantized* /*baseline*/, const Quantized& current, BitBuffer& out) {
+    static void serialize(
+        const Quantized* /*baseline*/,
+        const Quantized& current,
+        BitBuffer& out,
+        ComponentSerializationContext& /*context*/) {
         static_assert(
             std::is_trivially_copyable<Quantized>::value,
             "default ComponentSerializationTraits serialization requires a trivially copyable quantized state");
         out.push_bytes(reinterpret_cast<const char*>(&current), sizeof(Quantized));
     }
 
-    static bool deserialize(BitBuffer& in, const Quantized* /*baseline*/, Quantized& out) {
+    static bool deserialize(
+        BitBuffer& in,
+        const Quantized* /*baseline*/,
+        Quantized& out,
+        ComponentSerializationContext& /*context*/) {
         static_assert(
             std::is_trivially_copyable<Quantized>::value,
             "default ComponentSerializationTraits deserialization requires a trivially copyable quantized state");
@@ -2301,66 +2309,6 @@ private:
     std::uint64_t state_token_ = 0;
 };
 
-namespace detail {
-
-template <typename Traits, typename Quantized, typename = void>
-struct has_context_component_serialize : std::false_type {};
-
-template <typename Traits, typename Quantized>
-struct has_context_component_serialize<
-    Traits,
-    Quantized,
-    std::void_t<decltype(Traits::serialize(
-        static_cast<const Quantized*>(nullptr),
-        std::declval<const Quantized&>(),
-        std::declval<BitBuffer&>(),
-        std::declval<ComponentSerializationContext&>()))>> : std::true_type {};
-
-template <typename Traits, typename Quantized, typename = void>
-struct has_context_component_deserialize : std::false_type {};
-
-template <typename Traits, typename Quantized>
-struct has_context_component_deserialize<
-    Traits,
-    Quantized,
-    std::void_t<decltype(Traits::deserialize(
-        std::declval<BitBuffer&>(),
-        static_cast<const Quantized*>(nullptr),
-        std::declval<Quantized&>(),
-        std::declval<ComponentSerializationContext&>()))>> : std::true_type {};
-
-template <typename Traits, typename Quantized>
-void serialize_component_quantized(
-    const Quantized* previous,
-    const Quantized& current,
-    BitBuffer& out,
-    ComponentSerializationContext* context) {
-    if constexpr (has_context_component_serialize<Traits, Quantized>::value) {
-        ComponentSerializationContext empty_context;
-        Traits::serialize(previous, current, out, context != nullptr ? *context : empty_context);
-    } else {
-        (void)context;
-        Traits::serialize(previous, current, out);
-    }
-}
-
-template <typename Traits, typename Quantized>
-bool deserialize_component_quantized(
-    BitBuffer& in,
-    const Quantized* previous,
-    Quantized& out,
-    ComponentSerializationContext* context) {
-    if constexpr (has_context_component_deserialize<Traits, Quantized>::value) {
-        ComponentSerializationContext empty_context;
-        return Traits::deserialize(in, previous, out, context != nullptr ? *context : empty_context);
-    } else {
-        (void)context;
-        return Traits::deserialize(in, previous, out);
-    }
-}
-
-}  // namespace detail
-
 template <typename T, typename Traits = ComponentSerializationTraits<T>>
 ComponentSerializationOps make_component_serialization_ops(std::string name = {}) {
     using Quantized = typename Traits::Quantized;
@@ -2399,7 +2347,7 @@ ComponentSerializationOps make_component_serialization_ops(std::string name = {}
         const std::uint8_t* previous_bytes,
         const std::uint8_t* current_bytes,
         BitBuffer& out,
-        ComponentSerializationContext* context) {
+        ComponentSerializationContext& context) {
         Quantized current{};
         std::memcpy(&current, current_bytes, sizeof(Quantized));
 
@@ -2410,13 +2358,13 @@ ComponentSerializationOps make_component_serialization_ops(std::string name = {}
             previous_ptr = &previous;
         }
 
-        detail::serialize_component_quantized<Traits, Quantized>(previous_ptr, current, out, context);
+        Traits::serialize(previous_ptr, current, out, context);
     };
     ops.deserialize = [](
         BitBuffer& in,
         const std::uint8_t* previous_bytes,
         std::uint8_t* out,
-        ComponentSerializationContext* context) {
+        ComponentSerializationContext& context) {
         Quantized previous{};
         const Quantized* previous_ptr = nullptr;
         if (previous_bytes != nullptr) {
@@ -2425,15 +2373,13 @@ ComponentSerializationOps make_component_serialization_ops(std::string name = {}
         }
 
         Quantized quantized{};
-        if (!detail::deserialize_component_quantized<Traits, Quantized>(in, previous_ptr, quantized, context)) {
+        if (!Traits::deserialize(in, previous_ptr, quantized, context)) {
             return false;
         }
         std::memcpy(out, &quantized, sizeof(Quantized));
         return true;
     };
-    ops.uses_context =
-        detail::has_context_component_serialize<Traits, Quantized>::value ||
-        detail::has_context_component_deserialize<Traits, Quantized>::value;
+    ops.uses_context = true;
     return ops;
 }
 

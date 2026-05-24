@@ -785,7 +785,8 @@ static std::unique_ptr<Registry::TypeErasedStorage> read_persistent_storage(
                 baseline_quantized(baseline, record, ops, entity_index);
             std::vector<unsigned char> quantized;
             quantized.resize(ops.quantized_size);
-            if (!ops.deserialize(payload, previous.empty() ? nullptr : previous.data(), quantized.data(), nullptr)) {
+            ComponentSerializationContext serialization_context;
+            if (!ops.deserialize(payload, previous.empty() ? nullptr : previous.data(), quantized.data(), serialization_context)) {
                 throw std::runtime_error("persistent snapshot component deserializer failed: " + record.name);
             }
             if (payload.remaining_bits() != 0U) {
