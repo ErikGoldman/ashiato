@@ -739,11 +739,12 @@ static void write_persistent_storages(
                 const std::vector<unsigned char> previous =
                     baseline_quantized(baseline, record, ops, entity_index);
                 BitBuffer payload;
+                ComponentSerializationContext serialization_context;
                 ops.serialize(
                     previous.empty() ? nullptr : previous.data(),
                     current.data(),
                     payload,
-                    nullptr);
+                    serialization_context);
                 write_payload(body, payload);
             }
         }
