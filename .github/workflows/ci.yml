@@ -154,23 +154,34 @@ jobs:
       - test-and-coverage
       - benchmarks
     if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    continue-on-error: true
     permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      contents: write
+      actions: read
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Create badge artifacts
+      - name: Check out Pages branch
+        id: checkout-pages
+        continue-on-error: true
+        uses: actions/checkout@v6
+        with:
+          ref: gh-pages
+          path: site
+
+      - name: Create Pages branch checkout
+        if: steps.checkout-pages.outcome != 'success'
         shell: bash
         run: |
           mkdir -p site
+          git -C site init
+          git -C site checkout --orphan gh-pages
+          git -C site remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Create badge artifacts
+        shell: bash
+        run: |
           printf '{"schemaVersion":1,"label":"CI","message":"%s","color":"%s"}\n' "${CI_MESSAGE:-failing}" "${CI_COLOR:-red}" > site/ci.json
           if [[ -n "${COVERAGE}" && -n "${COLOR}" ]]; then
             printf '{"schemaVersion":1,"label":"coverage","message":"%s%%","color":"%s"}\n' "${COVERAGE}" "${COLOR}" > site/coverage.json
@@ -198,11 +209,15 @@ jobs:
           --results-dir benchmark-results
           --history-url "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/benchmarks/history/index.json"
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: site
-
-      - name: Deploy Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
+      - name: Commit Pages updates
+        shell: bash
+        run: |
+          git -C site config user.name "github-actions[bot]"
+          git -C site config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C site add .
+          if git -C site diff --cached --quiet; then
+            echo "No Pages changes to publish."
+            exit 0
+          fi
+          git -C site commit -m "Update Pages for ${GITHUB_SHA::12}"
+          git -C site push origin HEAD:gh-pages

@@ -52,6 +52,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def run_slug(started_at: datetime, commit: str) -> str:
+    timestamp = started_at.strftime("%Y%m%dT%H%M%SZ")
+    short_commit = commit[:12] if commit else "unknown"
+    return f"{timestamp}-{short_commit}"
+
+
 def benchmark_path(build_dir: Path) -> Path:
     path = build_dir / "benchmarks" / "basic_operations_benchmark"
     if not path.exists():
@@ -106,7 +112,7 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "cpu").mkdir(exist_ok=True)
 
-    started_at = datetime.now(timezone.utc).isoformat()
+    started_at = datetime.now(timezone.utc)
     filter_value = benchmark_filter(args)
     google_benchmark_json = args.output_dir / "cpu" / "google-benchmark.json"
 
@@ -130,11 +136,13 @@ def main() -> int:
     result = {
         "schema_version": 1,
         "commit": args.commit,
+        "short_commit": args.commit[:12],
+        "run_slug": run_slug(started_at, args.commit),
         "ref": args.ref,
         "repository": args.repository,
         "run_id": args.run_id,
         "run_attempt": args.run_attempt,
-        "started_at": started_at,
+        "started_at": started_at.isoformat(),
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "subset": args.subset,
         "benchmark_filter": filter_value,
@@ -144,6 +152,8 @@ def main() -> int:
     metadata_keys = (
         "schema_version",
         "commit",
+        "short_commit",
+        "run_slug",
         "ref",
         "repository",
         "run_id",
