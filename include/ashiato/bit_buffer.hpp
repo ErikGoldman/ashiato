@@ -80,7 +80,7 @@ public:
         read_bit_ = 0;
     }
 
-    void push_bool(bool value) {
+    void write_bool(bool value) {
         if ((bit_size_ % 8U) == 0) {
             bytes_.push_back(0);
         }
@@ -92,11 +92,11 @@ public:
         ++bit_size_;
     }
 
-    void push_bits(std::int64_t value, std::size_t num_bits) {
-        push_unsigned_bits(static_cast<std::uint64_t>(value), num_bits);
+    void write_bits(std::int64_t value, std::size_t num_bits) {
+        write_unsigned_bits(static_cast<std::uint64_t>(value), num_bits);
     }
 
-    void push_unsigned_bits(std::uint64_t value, std::size_t num_bits) {
+    void write_unsigned_bits(std::uint64_t value, std::size_t num_bits) {
         if (num_bits > 64U) {
             throw std::invalid_argument("bit buffer cannot push more than 64 bits at once");
         }
@@ -193,7 +193,7 @@ public:
         }
     }
 
-    void push_bytes(const char* data, std::size_t num_bytes) {
+    void write_bytes(const char* data, std::size_t num_bytes) {
         if (data == nullptr && num_bytes != 0) {
             throw std::invalid_argument("bit buffer cannot push bytes from null data");
         }
@@ -209,11 +209,11 @@ public:
         }
 
         for (std::size_t index = 0; index < num_bytes; ++index) {
-            push_bits(static_cast<unsigned char>(data[index]), 8U);
+            write_bits(static_cast<unsigned char>(data[index]), 8U);
         }
     }
 
-    void push_buffer_bits(const BitBuffer& source) {
+    void write_buffer_bits(const BitBuffer& source) {
         if (source.bit_size_ == 0) {
             return;
         }
@@ -227,7 +227,7 @@ public:
         for (std::size_t bit = 0; bit < source.bit_size_; ++bit) {
             const bool value =
                 (source.bytes_[bit / 8U] & static_cast<std::uint8_t>(1U << (bit % 8U))) != 0;
-            push_bool(value);
+            write_bool(value);
         }
     }
 
@@ -239,13 +239,13 @@ public:
 
         if ((read_bit_ % 8U) == 0 && (out.bit_size_ % 8U) == 0 && (num_bits % 8U) == 0) {
             const std::size_t num_bytes = num_bits / 8U;
-            out.push_bytes(reinterpret_cast<const char*>(bytes_.data() + (read_bit_ / 8U)), num_bytes);
+            out.write_bytes(reinterpret_cast<const char*>(bytes_.data() + (read_bit_ / 8U)), num_bytes);
             read_bit_ += num_bits;
             return;
         }
 
         for (std::size_t bit = 0; bit < num_bits; ++bit) {
-            out.push_bool(read_bool());
+            out.write_bool(read_bool());
         }
     }
 

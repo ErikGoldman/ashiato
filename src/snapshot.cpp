@@ -94,7 +94,7 @@ std::uint64_t read_u64_le(std::istream& in) {
 }
 
 void write_bits(BitBuffer& out, std::uint64_t value, std::size_t bits) {
-    out.push_unsigned_bits(value, bits);
+    out.write_unsigned_bits(value, bits);
 }
 
 std::uint64_t read_bits(BitBuffer& in, std::size_t bits) {
@@ -104,7 +104,7 @@ std::uint64_t read_bits(BitBuffer& in, std::size_t bits) {
 void write_buffer_string(BitBuffer& out, const std::string& value) {
     write_bits(out, static_cast<std::uint64_t>(value.size()), 32U);
     if (!value.empty()) {
-        out.push_bytes(value.data(), value.size());
+        out.write_bytes(value.data(), value.size());
     }
 }
 
@@ -693,7 +693,7 @@ static std::vector<std::string> read_name_table(BitBuffer& body) {
 
 static void write_payload(BitBuffer& body, const BitBuffer& payload) {
     detail::write_bits(body, static_cast<std::uint64_t>(payload.bit_size()), 32U);
-    body.push_buffer_bits(payload);
+    body.write_buffer_bits(payload);
 }
 
 static BitBuffer read_payload(BitBuffer& body) {

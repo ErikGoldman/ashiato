@@ -501,6 +501,8 @@ private:
 struct ComponentSerializationContext {
     void* userContext = nullptr;
     SerializationTraceCapture* payloadTrace = nullptr;
+    std::uint32_t currentFrame = 0;
+    std::uint32_t previousFrame = 0;
 };
 
 class ScopedSerializationTraceScope {
@@ -538,6 +540,8 @@ private:
 #else
 struct ComponentSerializationContext {
     void* userContext = nullptr;
+    std::uint32_t currentFrame = 0;
+    std::uint32_t previousFrame = 0;
 };
 
 #define ASHIATO_SERIALIZATION_TRACE_SCOPE(name) ((void)0)
@@ -594,7 +598,7 @@ struct ComponentSerializationTraits {
         static_assert(
             std::is_trivially_copyable<Quantized>::value,
             "default ComponentSerializationTraits serialization requires a trivially copyable quantized state");
-        out.push_bytes(reinterpret_cast<const char*>(&current), sizeof(Quantized));
+        out.write_bytes(reinterpret_cast<const char*>(&current), sizeof(Quantized));
     }
 
     static bool deserialize(
