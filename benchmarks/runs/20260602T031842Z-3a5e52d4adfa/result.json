@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "commit": "3a5e52d4adfa3739a52867be5c651b308bc2c28c",
+  "short_commit": "3a5e52d4adfa",
+  "run_slug": "20260602T031842Z-3a5e52d4adfa",
+  "ref": "main",
+  "repository": "ErikGoldman/ashiato",
+  "run_id": "26796162659",
+  "run_attempt": "1",
+  "started_at": "2026-06-02T03:18:42.911460+00:00",
+  "finished_at": "2026-06-02T03:18:49.723611+00:00",
+  "subset": "characteristic",
+  "benchmark_filter": "^(BM_IterateEightComponents/16384|BM_IterateEightComponentsOwnedGroupView/16384|BM_IterateSparseTwoComponentView/16384/10|BM_IterateWriteOwnedGroupViewEightComponents/16384|BM_AccessViewReadWrite/16384|BM_AddRemoveComponents/16384|BM_GroupMaintenanceAddRemove/16384|BM_Snapshot/16384|BM_DeltaSnapshotDirtyValues/16384|BM_DeltaSnapshotStructuralChanges/16384|BM_DeltaSnapshotRestoreStructuralChanges/16384|BM_RuntimeEnsureExistingWriteRead/16384|BM_JobScheduleReadOnly/256|BM_RunJobsSingleThread/16384|BM_RunJobsParallelThreadPool/16384|BM_RunJobsParallelOverlappingWritesThreadPool/16384)$",
+  "cpu": [
+    {
+      "name": "BM_IterateSparseTwoComponentView/16384/10",
+      "real_time": 12187.530625863403,
+      "cpu_time": 12181.259596993017,
+      "time_unit": "ns",
+      "items_per_second": 134550945.8155372,
+      "bytes_per_second": null,
+      "iterations": 22481
+    },
+    {
+      "name": "BM_AddRemoveComponents/16384",
+      "real_time": 7142650.571427654,
+      "cpu_time": 7141817.904761906,
+      "time_unit": "ns",
+      "items_per_second": 4588187.550700709,
+      "bytes_per_second": null,
+      "iterations": 42
+    },
+    {
+      "name": "BM_IterateEightComponents/16384",
+      "real_time": 1102012.988372178,
+      "cpu_time": 1101923.1782945737,
+      "time_unit": "ns",
+      "items_per_second": 14868550.115587201,
+      "bytes_per_second": null,
+      "iterations": 258
+    },
+    {
+      "name": "BM_IterateEightComponentsOwnedGroupView/16384",
+      "real_time": 460666.36065578763,
+      "cpu_time": 460607.82459016383,
+      "time_unit": "ns",
+      "items_per_second": 35570390.09178368,
+      "bytes_per_second": null,
+      "iterations": 610
+    },
+    {
+      "name": "BM_IterateWriteOwnedGroupViewEightComponents/16384",
+      "real_time": 626016.2119205662,
+      "cpu_time": 625950.5320088301,
+      "time_unit": "ns",
+      "items_per_second": 209396738.71568975,
+      "bytes_per_second": null,
+      "iterations": 453
+    },
+    {
+      "name": "BM_AccessViewReadWrite/16384",
+      "real_time": 103154.91202672364,
+      "cpu_time": 103143.13103192279,
+      "time_unit": "ns",
+      "items_per_second": 158847223.62101993,
+      "bytes_per_second": null,
+      "iterations": 2694
+    },
+    {
+      "name": "BM_GroupMaintenanceAddRemove/16384",
+      "real_time": 8484828.085714266,
+      "cpu_time": 8483790.0,
+      "time_unit": "ns",
+      "items_per_second": 3862424.6946235113,
+      "bytes_per_second": null,
+      "iterations": 35
+    },
+    {
+      "name": "BM_Snapshot/16384",
+      "real_time": 812818.5431034147,
+      "cpu_time": 812358.7413793094,
+      "time_unit": "ns",
+      "items_per_second": 161347435.95846826,
+      "bytes_per_second": null,
+      "iterations": 348
+    },
+    {
+      "name": "BM_DeltaSnapshotDirtyValues/16384",
+      "real_time": 42196.71878806402,
+      "cpu_time": 42192.50548112059,
+      "time_unit": "ns",
+      "items_per_second": 48539426.05793808,
+      "bytes_per_second": null,
+      "iterations": 6568
+    },
+    {
+      "name": "BM_DeltaSnapshotStructuralChanges/16384",
+      "real_time": 44177.84688090864,
+      "cpu_time": 44173.64303717708,
+      "time_unit": "ns",
+      "items_per_second": 23181244.054020837,
+      "bytes_per_second": null,
+      "iterations": 6348
+    },
+    {
+      "name": "BM_DeltaSnapshotRestoreStructuralChanges/16384",
+      "real_time": 181343.48966442276,
+      "cpu_time": 181482.94702843667,
+      "time_unit": "ns",
+      "items_per_second": 5642403.414572879,
+      "bytes_per_second": null,
+      "iterations": 1548
+    },
+    {
+      "name": "BM_RuntimeEnsureExistingWriteRead/16384",
+      "real_time": 386685.5103163438,
+      "cpu_time": 386662.5598349385,
+      "time_unit": "ns",
+      "items_per_second": 127118591.52068509,
+      "bytes_per_second": null,
+      "iterations": 727
+    },
+    {
+      "name": "BM_JobScheduleReadOnly/256",
+      "real_time": 104.05405736751248,
+      "cpu_time": 104.03769605673303,
+      "time_unit": "ns",
+      "items_per_second": 2460646570.4546175,
+      "bytes_per_second": null,
+      "iterations": 2618311
+    },
+    {
+      "name": "BM_RunJobsSingleThread/16384",
+      "real_time": 378423.03903091577,
+      "cpu_time": 378400.0565275908,
+      "time_unit": "ns",
+      "items_per_second": 173192363.13386092,
+      "bytes_per_second": null,
+      "iterations": 743
+    },
+    {
+      "name": "BM_RunJobsParallelThreadPool/16384",
+      "real_time": 596266.5861561357,
+      "cpu_time": 410677.30338733556,
+      "time_unit": "ns",
+      "items_per_second": 159580282.2786846,
+      "bytes_per_second": null,
+      "iterations": 679
+    },
+    {
+      "name": "BM_RunJobsParallelOverlappingWritesThreadPool/16384",
+      "real_time": 526117.2371967492,
+      "cpu_time": 388822.6563342321,
+      "time_unit": "ns",
+      "items_per_second": 168549848.96678767,
+      "bytes_per_second": null,
+      "iterations": 742
+    }
+  ]
+}
