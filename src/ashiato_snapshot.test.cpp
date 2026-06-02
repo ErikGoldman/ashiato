@@ -210,7 +210,7 @@ void zero_native_typed_component_table(std::string& bytes) {
     (void)read_native_value<std::uint32_t>(bytes, cursor); // free head
     (void)read_native_value<std::uint64_t>(bytes, cursor); // singleton entity
     (void)read_native_value<std::uint64_t>(bytes, cursor); // system tag
-    for (std::size_t primitive = 0; primitive < 7U; ++primitive) {
+    for (std::size_t primitive = 0; primitive < 9U; ++primitive) {
         (void)read_native_value<std::uint64_t>(bytes, cursor);
     }
 

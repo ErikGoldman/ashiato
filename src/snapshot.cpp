@@ -8,6 +8,7 @@ constexpr std::uint32_t persistent_magic = 0x50534345U;  // ECSP
 constexpr std::uint32_t persistent_version = 1U;
 constexpr std::uint32_t persistent_full_kind = 1U;
 constexpr std::uint32_t persistent_delta_kind = 2U;
+constexpr std::size_t native_primitive_type_count = static_cast<std::size_t>(PrimitiveType::String) + 1U;
 
 void write_exact(std::ostream& out, const void* data, std::size_t size) {
     out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
@@ -296,7 +297,7 @@ void write_snapshot_common(
     detail::write_pod<std::uint32_t>(out, free_head);
     detail::write_pod<std::uint64_t>(out, singleton_entity.value);
     detail::write_pod<std::uint64_t>(out, system_tag.value);
-    for (std::size_t index = 0; index < 8U; ++index) {
+    for (std::size_t index = 0; index < detail::native_primitive_type_count; ++index) {
         detail::write_pod<std::uint64_t>(out, primitive_types[index].value);
     }
 
@@ -304,7 +305,7 @@ void write_snapshot_common(
         if (component == system_tag) {
             return true;
         }
-        for (std::size_t index = 0; index < 8U; ++index) {
+        for (std::size_t index = 0; index < detail::native_primitive_type_count; ++index) {
             if (component == primitive_types[index]) {
                 return true;
             }
@@ -399,7 +400,7 @@ void read_snapshot_header(
     free_head = detail::read_pod<std::uint32_t>(in);
     singleton_entity = Entity{detail::read_pod<std::uint64_t>(in)};
     system_tag = Entity{detail::read_pod<std::uint64_t>(in)};
-    for (std::size_t index = 0; index < 8U; ++index) {
+    for (std::size_t index = 0; index < detail::native_primitive_type_count; ++index) {
         primitive_types[index] = Entity{detail::read_pod<std::uint64_t>(in)};
     }
 
@@ -509,7 +510,7 @@ void Registry::DeltaSnapshot::write(std::ostream& out, const SnapshotComponentOp
 
 void Registry::DeltaSnapshot::write_native(std::ostream& out, const SnapshotComponentOptions& options) const {
     std::vector<Entity> empty_typed_components;
-    std::array<Entity, 7> empty_primitives{};
+    std::array<Entity, detail::native_primitive_type_count> empty_primitives{};
     write_snapshot_common(
         out,
         2U,
@@ -536,7 +537,7 @@ Registry::DeltaSnapshot Registry::DeltaSnapshot::read_native(std::istream& in) {
     DeltaSnapshot snapshot;
     Entity singleton_entity;
     Entity system_tag;
-    std::array<Entity, 8> primitive_types{};
+    std::array<Entity, detail::native_primitive_type_count> primitive_types{};
     std::vector<Entity> typed_components;
     std::vector<std::unique_ptr<Registry::GroupRecord>> groups;
     read_snapshot_header(
