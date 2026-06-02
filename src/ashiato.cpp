@@ -470,7 +470,7 @@ std::size_t Registry::bind_typed_component(
     const void* token,
     std::string type_key,
     std::string name,
-    ComponentInfo info,
+    const ComponentInfo& info,
     bool singleton,
     Entity component) const {
     const auto found_by_key = component_catalog_.typed_bindings_by_type_key.find(type_key);
@@ -759,6 +759,8 @@ void Registry::unregister_component_entity(Entity component) {
 void Registry::register_primitive_types() {
     component_catalog_.primitive_types[static_cast<std::size_t>(PrimitiveType::Bool)] =
         register_primitive("bool", sizeof(bool), alignof(bool), PrimitiveKind::Bool);
+    component_catalog_.primitive_types[static_cast<std::size_t>(PrimitiveType::U8)] =
+        register_primitive("u8", sizeof(std::uint8_t), alignof(std::uint8_t), PrimitiveKind::U8);
     component_catalog_.primitive_types[static_cast<std::size_t>(PrimitiveType::I32)] =
         register_primitive("i32", sizeof(std::int32_t), alignof(std::int32_t), PrimitiveKind::I32);
     component_catalog_.primitive_types[static_cast<std::size_t>(PrimitiveType::U32)] =
@@ -995,6 +997,9 @@ void Registry::print_field(std::ostringstream& out, const unsigned char* data, c
     case PrimitiveKind::Bool:
         out << (*reinterpret_cast<const bool*>(data) ? "true" : "false");
         break;
+    case PrimitiveKind::U8:
+        out << static_cast<unsigned>(*reinterpret_cast<const std::uint8_t*>(data));
+        break;
     case PrimitiveKind::I32:
         out << *reinterpret_cast<const std::int32_t*>(data);
         break;
@@ -1008,11 +1013,19 @@ void Registry::print_field(std::ostringstream& out, const unsigned char* data, c
         out << *reinterpret_cast<const std::uint64_t*>(data);
         break;
     case PrimitiveKind::F32:
-        out << *reinterpret_cast<const float*>(data);
+    {
+        float value = 0.0f;
+        std::memcpy(&value, data, sizeof(value));
+        out << value;
         break;
+    }
     case PrimitiveKind::F64:
-        out << *reinterpret_cast<const double*>(data);
+    {
+        double value = 0.0;
+        std::memcpy(&value, data, sizeof(value));
+        out << value;
         break;
+    }
     case PrimitiveKind::String:
         out << "\"";
         for (std::size_t i = 0; i < field.count && data[i] != '\0'; ++i) {

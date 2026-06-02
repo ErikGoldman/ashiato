@@ -29,12 +29,12 @@ struct CountingPositionTraits {
         ashiato::ComponentSerializationContext&) {
         ++serialize_calls;
         if (previous == nullptr) {
-            out.push_bits(current.x, 32U);
-            out.push_bits(current.y, 32U);
+            out.write_bits(current.x, 32U);
+            out.write_bits(current.y, 32U);
             return;
         }
-        out.push_bits(current.x - previous->x, 16U);
-        out.push_bits(current.y - previous->y, 16U);
+        out.write_bits(current.x - previous->x, 16U);
+        out.write_bits(current.y - previous->y, 16U);
     }
 
     static bool deserialize(
@@ -100,7 +100,7 @@ struct OverAlignedPersistentTraits {
         ashiato::ComponentSerializationContext&) {
         all_aligned = all_aligned && is_aligned(previous) && is_aligned(&current);
         const std::int32_t delta = previous == nullptr ? current.value : current.value - previous->value;
-        out.push_bits(delta, 32U);
+        out.write_bits(delta, 32U);
     }
 
     static bool deserialize(
@@ -137,8 +137,8 @@ struct ContextPositionSerializationTraits {
         if (counter != nullptr) {
             ++(*counter);
         }
-        out.push_bits(current.x, 32U);
-        out.push_bits(current.y, 32U);
+        out.write_bits(current.x, 32U);
+        out.write_bits(current.y, 32U);
     }
 
     static bool deserialize(

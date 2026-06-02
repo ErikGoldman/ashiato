@@ -5,10 +5,72 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace ashiato {
+
+namespace detail {
+
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && defined(__ORDER_BIG_ENDIAN__)
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+inline constexpr bool host_is_little_endian = true;
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+inline constexpr bool host_is_little_endian = false;
+#else
+#error "Unsupported byte order"
+#endif
+#elif defined(_M_IX86) || defined(_M_X64) || defined(_M_ARM) || defined(_M_ARM64)
+inline constexpr bool host_is_little_endian = true;
+#elif defined(_WIN32)
+inline constexpr bool host_is_little_endian = true;
+#elif defined(__cppcheck__) || defined(__CPPCHECK__)
+inline constexpr bool host_is_little_endian = true;
+#else
+// cppcheck-suppress preprocessorErrorDirective
+#error "Unsupported platform: cannot determine byte order"
+#endif
+
+constexpr std::uint16_t byte_swap(std::uint16_t value) noexcept {
+    return static_cast<std::uint16_t>((value >> 8U) | (value << 8U));
+}
+
+constexpr std::uint32_t byte_swap(std::uint32_t value) noexcept {
+    return ((value & 0x000000FFU) << 24U) |
+        ((value & 0x0000FF00U) << 8U) |
+        ((value & 0x00FF0000U) >> 8U) |
+        ((value & 0xFF000000U) >> 24U);
+}
+
+constexpr std::uint64_t byte_swap(std::uint64_t value) noexcept {
+    return ((value & 0x00000000000000FFULL) << 56U) |
+        ((value & 0x000000000000FF00ULL) << 40U) |
+        ((value & 0x0000000000FF0000ULL) << 24U) |
+        ((value & 0x00000000FF000000ULL) << 8U) |
+        ((value & 0x000000FF00000000ULL) >> 8U) |
+        ((value & 0x0000FF0000000000ULL) >> 24U) |
+        ((value & 0x00FF000000000000ULL) >> 40U) |
+        ((value & 0xFF00000000000000ULL) >> 56U);
+}
+
+constexpr std::uint8_t little_endian_value(std::uint8_t value) noexcept {
+    return value;
+}
+
+constexpr std::uint16_t little_endian_value(std::uint16_t value) noexcept {
+    return host_is_little_endian ? value : byte_swap(value);
+}
+
+constexpr std::uint32_t little_endian_value(std::uint32_t value) noexcept {
+    return host_is_little_endian ? value : byte_swap(value);
+}
+
+constexpr std::uint64_t little_endian_value(std::uint64_t value) noexcept {
+    return host_is_little_endian ? value : byte_swap(value);
+}
+
+}  // namespace detail
 
 class BitBuffer {
 public:
@@ -213,6 +275,52 @@ public:
         }
     }
 
+    void write_uint8(std::uint8_t value) {
+        write_little_endian_unsigned(value);
+    }
+
+    void write_uint16_le(std::uint16_t value) {
+        write_little_endian_unsigned(value);
+    }
+
+    void write_uint32_le(std::uint32_t value) {
+        write_little_endian_unsigned(value);
+    }
+
+    void write_uint64_le(std::uint64_t value) {
+        write_little_endian_unsigned(value);
+    }
+
+    void write_int8(std::int8_t value) {
+        write_little_endian_signed(value);
+    }
+
+    void write_int16_le(std::int16_t value) {
+        write_little_endian_signed(value);
+    }
+
+    void write_int32_le(std::int32_t value) {
+        write_little_endian_signed(value);
+    }
+
+    void write_int64_le(std::int64_t value) {
+        write_little_endian_signed(value);
+    }
+
+    void write_float32_le(float value) {
+        static_assert(sizeof(float) == sizeof(std::uint32_t), "float32 serialization requires 32-bit float");
+        std::uint32_t raw = 0;
+        std::memcpy(&raw, &value, sizeof(raw));
+        write_uint32_le(raw);
+    }
+
+    void write_float64_le(double value) {
+        static_assert(sizeof(double) == sizeof(std::uint64_t), "float64 serialization requires 64-bit double");
+        std::uint64_t raw = 0;
+        std::memcpy(&raw, &value, sizeof(raw));
+        write_uint64_le(raw);
+    }
+
     void write_buffer_bits(const BitBuffer& source) {
         if (source.bit_size_ == 0) {
             return;
@@ -326,6 +434,54 @@ public:
         }
     }
 
+    std::uint8_t read_uint8() {
+        return read_little_endian_unsigned<std::uint8_t>();
+    }
+
+    std::uint16_t read_uint16_le() {
+        return read_little_endian_unsigned<std::uint16_t>();
+    }
+
+    std::uint32_t read_uint32_le() {
+        return read_little_endian_unsigned<std::uint32_t>();
+    }
+
+    std::uint64_t read_uint64_le() {
+        return read_little_endian_unsigned<std::uint64_t>();
+    }
+
+    std::int8_t read_int8() {
+        return read_little_endian_signed<std::int8_t>();
+    }
+
+    std::int16_t read_int16_le() {
+        return read_little_endian_signed<std::int16_t>();
+    }
+
+    std::int32_t read_int32_le() {
+        return read_little_endian_signed<std::int32_t>();
+    }
+
+    std::int64_t read_int64_le() {
+        return read_little_endian_signed<std::int64_t>();
+    }
+
+    float read_float32_le() {
+        static_assert(sizeof(float) == sizeof(std::uint32_t), "float32 serialization requires 32-bit float");
+        const std::uint32_t raw = read_uint32_le();
+        float value = 0.0F;
+        std::memcpy(&value, &raw, sizeof(value));
+        return value;
+    }
+
+    double read_float64_le() {
+        static_assert(sizeof(double) == sizeof(std::uint64_t), "float64 serialization requires 64-bit double");
+        const std::uint64_t raw = read_uint64_le();
+        double value = 0.0;
+        std::memcpy(&value, &raw, sizeof(value));
+        return value;
+    }
+
     friend bool operator==(const BitBuffer& lhs, const BitBuffer& rhs) noexcept {
         return lhs.bit_size_ == rhs.bit_size_ && lhs.bytes_ == rhs.bytes_;
     }
@@ -335,6 +491,40 @@ public:
     }
 
 private:
+    template <typename T>
+    void write_little_endian_unsigned(T value) {
+        static_assert(std::is_unsigned<T>::value, "little-endian writes require an unsigned integer type");
+        const T wire_value = detail::little_endian_value(value);
+        write_bytes(reinterpret_cast<const char*>(&wire_value), sizeof(wire_value));
+    }
+
+    template <typename T>
+    void write_little_endian_signed(T value) {
+        static_assert(std::is_signed<T>::value, "little-endian writes require a signed integer type");
+        using Unsigned = typename std::make_unsigned<T>::type;
+        Unsigned raw = 0;
+        std::memcpy(&raw, &value, sizeof(raw));
+        write_little_endian_unsigned(raw);
+    }
+
+    template <typename T>
+    T read_little_endian_unsigned() {
+        static_assert(std::is_unsigned<T>::value, "little-endian reads require an unsigned integer type");
+        T wire_value = 0;
+        read_bytes(reinterpret_cast<char*>(&wire_value), sizeof(wire_value));
+        return detail::little_endian_value(wire_value);
+    }
+
+    template <typename T>
+    T read_little_endian_signed() {
+        static_assert(std::is_signed<T>::value, "little-endian reads require a signed integer type");
+        using Unsigned = typename std::make_unsigned<T>::type;
+        const Unsigned raw = read_little_endian_unsigned<Unsigned>();
+        T value = 0;
+        std::memcpy(&value, &raw, sizeof(value));
+        return value;
+    }
+
     void ensure_can_read(std::size_t num_bits) const {
         if (num_bits > remaining_bits()) {
             throw std::out_of_range("bit buffer read past end");

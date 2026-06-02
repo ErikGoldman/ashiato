@@ -53,6 +53,15 @@ bool set_nonblocking(Socket socket) {
 }
 #endif
 
+bool parse_ipv4_address(const std::string& value, in_addr& out) {
+#ifdef _WIN32
+    const int parsed = InetPtonA(AF_INET, value.c_str(), &out);
+#else
+    const int parsed = inet_pton(AF_INET, value.c_str(), &out);
+#endif
+    return parsed == 1 && out.s_addr != INADDR_NONE;
+}
+
 std::string json_escape(const std::string& value) {
     std::string out;
     out.reserve(value.size() + 2);
@@ -354,7 +363,9 @@ bool write_field_value(Registry& registry, Entity component, const ComponentFiel
     if (value.kind != JsonValue::Kind::Number) {
         return false;
     }
-    if (field.type == registry.primitive_type(PrimitiveType::I32)) {
+    if (field.type == registry.primitive_type(PrimitiveType::U8)) {
+        *reinterpret_cast<std::uint8_t*>(bytes + field.offset) = static_cast<std::uint8_t>(value.number);
+    } else if (field.type == registry.primitive_type(PrimitiveType::I32)) {
         *reinterpret_cast<std::int32_t*>(bytes + field.offset) = static_cast<std::int32_t>(value.number);
     } else if (field.type == registry.primitive_type(PrimitiveType::U32)) {
         *reinterpret_cast<std::uint32_t*>(bytes + field.offset) = static_cast<std::uint32_t>(value.number);
@@ -382,6 +393,9 @@ const char* editable_field_type(Registry& registry, const ComponentField& field)
     }
     if (field.count != 1) {
         return nullptr;
+    }
+    if (field.type == registry.primitive_type(PrimitiveType::U8)) {
+        return "u8";
     }
     if (field.type == registry.primitive_type(PrimitiveType::I32)) {
         return "i32";
@@ -416,6 +430,8 @@ void append_field_value(std::ostringstream& out, Registry& registry, const Compo
             value.push_back(ch >= 0x20 && ch <= 0x7e ? static_cast<char>(ch) : '?');
         }
         out << quoted(value);
+    } else if (field.type == registry.primitive_type(PrimitiveType::U8)) {
+        out << quoted(std::to_string(*reinterpret_cast<const std::uint8_t*>(bytes + field.offset)));
     } else if (field.type == registry.primitive_type(PrimitiveType::I32)) {
         out << quoted(std::to_string(*reinterpret_cast<const std::int32_t*>(bytes + field.offset)));
     } else if (field.type == registry.primitive_type(PrimitiveType::U32)) {
@@ -470,8 +486,7 @@ public:
         sockaddr_in address{};
         address.sin_family = AF_INET;
         address.sin_port = htons(options_.port);
-        address.sin_addr.s_addr = inet_addr(options_.bind_address.c_str());
-        if (address.sin_addr.s_addr == INADDR_NONE) {
+        if (!parse_ipv4_address(options_.bind_address, address.sin_addr)) {
             address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         }
 

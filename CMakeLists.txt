@@ -26,7 +26,41 @@ option(ASHIATO_BUILD_STATIC_LIBRARY_ONLY "Build only the Ashiato ECS static libr
 option(ASHIATO_ENABLE_COVERAGE "Build Ashiato ECS targets with coverage instrumentation" OFF)
 option(ASHIATO_ENABLE_DEBUG_SERVER "Build the optional Ashiato ECS local debug GraphQL server" OFF)
 option(ASHIATO_ENABLE_SERIALIZATION_TRACING "Build serialization payload trace capture helpers" OFF)
+option(ASHIATO_ENABLE_CLANG_TIDY "Run clang-tidy while compiling Ashiato ECS targets" OFF)
+option(ASHIATO_ENABLE_CPPCHECK "Run cppcheck while compiling Ashiato ECS targets" OFF)
 option(ASHIATO_INSTALL "Install Ashiato ECS library and CMake package files" ${ashiato_is_top_level})
+
+function(ashiato_apply_strict_warnings target_name)
+    if(MSVC)
+        target_compile_options(${target_name} PRIVATE /W4 /WX)
+    else()
+        target_compile_options(${target_name} PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+            -Wshadow
+            -Wconversion
+            -Wsign-conversion
+            -Werror
+        )
+    endif()
+endfunction()
+
+function(ashiato_apply_static_analysis target_name)
+    if(ASHIATO_ENABLE_CLANG_TIDY)
+        find_program(ASHIATO_CLANG_TIDY_EXECUTABLE NAMES clang-tidy REQUIRED)
+        set_target_properties(${target_name} PROPERTIES
+            CXX_CLANG_TIDY "${ASHIATO_CLANG_TIDY_EXECUTABLE};--warnings-as-errors=*"
+        )
+    endif()
+
+    if(ASHIATO_ENABLE_CPPCHECK)
+        find_program(ASHIATO_CPPCHECK_EXECUTABLE NAMES cppcheck REQUIRED)
+        set_target_properties(${target_name} PROPERTIES
+            CXX_CPPCHECK "${ASHIATO_CPPCHECK_EXECUTABLE};--enable=warning,performance,portability;--error-exitcode=1;--inline-suppr;--std=c++17;--suppress=missingIncludeSystem"
+        )
+    endif()
+endfunction()
 
 if(ASHIATO_BUILD_STATIC_LIBRARY_ONLY)
     set(ASHIATO_BUILD_EXAMPLE OFF CACHE BOOL "Build the example executable" FORCE)
@@ -131,11 +165,8 @@ if(ASHIATO_ENABLE_COVERAGE)
     ashiato_enable_coverage(ashiato)
 endif()
 
-if(MSVC)
-    target_compile_options(ashiato PRIVATE /W4)
-else()
-    target_compile_options(ashiato PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+ashiato_apply_strict_warnings(ashiato)
+ashiato_apply_static_analysis(ashiato)
 
 if(ASHIATO_INSTALL)
     include(GNUInstallDirs)

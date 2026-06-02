@@ -25,7 +25,7 @@ void record_job_task_exception(
     std::mutex& exception_mutex) {
     std::lock_guard<std::mutex> lock(exception_mutex);
     if (first_exception == nullptr) {
-        first_exception = exception;
+        first_exception = std::move(exception);
     }
 }
 
@@ -228,7 +228,7 @@ void Registry::merge_deferred_dirty_writes(const TypeErasedStorage::DeferredDirt
     }
 }
 
-void JobGraph::tick(Registry& registry, RunJobsOptions options) const {
+void JobGraph::tick(Registry& registry, const RunJobsOptions& options) const {
     const std::size_t job_count = registry.job_registry_.jobs.size();
     if (options.force_single_threaded) {
         for (const JobScheduleStage& stage : schedule_.stages) {
@@ -339,7 +339,7 @@ void JobGraph::tick(Registry& registry, RunJobsOptions options) const {
 void JobGraph::tick_for_entities(
     Registry& registry,
     const std::vector<Entity>& entities,
-    RunJobsOptions options) const {
+    const RunJobsOptions& options) const {
     if (entities.empty()) {
         return;
     }
@@ -494,12 +494,12 @@ const JobGraph& Registry::cached_all_jobs_graph() const {
     return job_registry_.cached_graph;
 }
 
-void Registry::run_jobs(RunJobsOptions options) {
+void Registry::run_jobs(const RunJobsOptions& options) {
     require_runtime_registry_access_allowed("run_jobs");
     cached_all_jobs_graph().tick(*this, options);
 }
 
-void Registry::run_jobs_for_entities(const std::vector<Entity>& entities, RunJobsOptions options) {
+void Registry::run_jobs_for_entities(const std::vector<Entity>& entities, const RunJobsOptions& options) {
     require_runtime_registry_access_allowed("run_jobs_for_entities");
     cached_all_jobs_graph().tick_for_entities(*this, entities, options);
 }

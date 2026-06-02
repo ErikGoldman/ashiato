@@ -633,8 +633,8 @@ public:
         return schedule_;
     }
 
-    void tick(Registry& registry, RunJobsOptions options = {}) const;
-    void tick_for_entities(Registry& registry, const std::vector<Entity>& entities, RunJobsOptions options = {}) const;
+    void tick(Registry& registry, const RunJobsOptions& options = {}) const;
+    void tick_for_entities(Registry& registry, const std::vector<Entity>& entities, const RunJobsOptions& options = {}) const;
 
 private:
     JobSchedule schedule_;
@@ -670,6 +670,7 @@ void invoke_job_context_callback(Callback& callback, Context& context, Entity en
 
 enum class PrimitiveType {
     Bool,
+    U8,
     I32,
     U32,
     I64,
@@ -1291,8 +1292,8 @@ public:
 
     void set_job_thread_executor(JobThreadExecutor executor);
 
-    void run_jobs(RunJobsOptions options = {});
-    void run_jobs_for_entities(const std::vector<Entity>& entities, RunJobsOptions options = {});
+    void run_jobs(const RunJobsOptions& options = {});
+    void run_jobs_for_entities(const std::vector<Entity>& entities, const RunJobsOptions& options = {});
     JobGraph compile_job_graph(const std::vector<Entity>& jobs) const;
     JobGraph compile_all_jobs_graph() const;
 
@@ -1457,6 +1458,7 @@ private:
     enum class PrimitiveKind {
         None,
         Bool,
+        U8,
         I32,
         U32,
         I64,
@@ -1647,7 +1649,7 @@ private:
         friend class PersistentSnapshotAccess;
 
     private:
-        TypeErasedStorage(ComponentInfo info, ComponentLifecycle lifecycle);
+        TypeErasedStorage(ComponentInfo info, const ComponentLifecycle& lifecycle);
 
         template <typename T>
         void validate_type() const {
@@ -1990,7 +1992,7 @@ private:
         const void* token,
         std::string type_key,
         std::string name,
-        ComponentInfo info,
+        const ComponentInfo& info,
         bool singleton,
         Entity component) const;
     void refresh_typed_storage_bindings(Entity component, TypeErasedStorage* storage) const;
@@ -2188,7 +2190,7 @@ private:
         mutable std::unordered_map<std::string, std::size_t> typed_bindings_by_type_key;
         mutable std::vector<TypedComponentBinding> typed_bindings;
         Entity singleton_entity;
-        Entity primitive_types[8]{};
+        Entity primitive_types[9]{};
         Entity system_tag;
         Entity job_tag;
     };
@@ -2270,7 +2272,7 @@ private:
     std::vector<Entity> typed_components_;
     std::vector<std::unique_ptr<GroupRecord>> groups_;
     Entity singleton_entity_;
-    Entity primitive_types_[8]{};
+    Entity primitive_types_[9]{};
     Entity system_tag_;
     std::uint64_t state_token_ = 0;
 };
@@ -2519,7 +2521,7 @@ private:
         std::vector<Entry> consumers;
     };
 
-    RegistryDirtyFrameBroadcastSubscription(std::shared_ptr<State> state, std::uint64_t id);
+    RegistryDirtyFrameBroadcastSubscription(const std::shared_ptr<State>& state, std::uint64_t id);
 
     std::weak_ptr<State> state_;
     std::uint64_t id_ = 0;
@@ -2559,7 +2561,7 @@ struct DirtySnapshotTrackerOptions {
 class DirtySnapshotTracker final : public RegistryDirtyFrameBroadcastListener {
 public:
     explicit DirtySnapshotTracker(DirtySnapshotTrackerOptions options = {});
-    ~DirtySnapshotTracker();
+    ~DirtySnapshotTracker() override;
 
     DirtySnapshotTracker(const DirtySnapshotTracker&) = delete;
     DirtySnapshotTracker& operator=(const DirtySnapshotTracker&) = delete;
@@ -2920,7 +2922,8 @@ private:
     }
 
     bool contains_all(std::uint32_t index) const {
-        constexpr bool singleton_flags[] = {detail::is_singleton_query<Components>::value...};
+        constexpr std::array<bool, component_count> singleton_flags = {
+            detail::is_singleton_query<Components>::value...};
         for (std::size_t position = 0; position < storages_.size(); ++position) {
             const TypeErasedStorage* storage = storages_[position];
             if (singleton_flags[position]) {
@@ -2984,7 +2987,7 @@ private:
         }
     }
 
-    Registry* registry_;
+    Registry* registry_ = nullptr;
     mutable std::array<TypeErasedStorage*, component_count> storages_;
     mutable GroupRecord* group_ = nullptr;
     mutable std::uint64_t cache_token_ = 0;

@@ -296,7 +296,7 @@ void write_snapshot_common(
     detail::write_pod<std::uint32_t>(out, free_head);
     detail::write_pod<std::uint64_t>(out, singleton_entity.value);
     detail::write_pod<std::uint64_t>(out, system_tag.value);
-    for (std::size_t index = 0; index < 7U; ++index) {
+    for (std::size_t index = 0; index < 8U; ++index) {
         detail::write_pod<std::uint64_t>(out, primitive_types[index].value);
     }
 
@@ -304,7 +304,7 @@ void write_snapshot_common(
         if (component == system_tag) {
             return true;
         }
-        for (std::size_t index = 0; index < 7U; ++index) {
+        for (std::size_t index = 0; index < 8U; ++index) {
             if (component == primitive_types[index]) {
                 return true;
             }
@@ -399,7 +399,7 @@ void read_snapshot_header(
     free_head = detail::read_pod<std::uint32_t>(in);
     singleton_entity = Entity{detail::read_pod<std::uint64_t>(in)};
     system_tag = Entity{detail::read_pod<std::uint64_t>(in)};
-    for (std::size_t index = 0; index < 7U; ++index) {
+    for (std::size_t index = 0; index < 8U; ++index) {
         primitive_types[index] = Entity{detail::read_pod<std::uint64_t>(in)};
     }
 
@@ -971,9 +971,9 @@ Registry::DeltaSnapshot read_persistent_delta_snapshot(
 }
 
 RegistryDirtyFrameBroadcastSubscription::RegistryDirtyFrameBroadcastSubscription(
-    std::shared_ptr<State> state,
+    const std::shared_ptr<State>& state,
     std::uint64_t id)
-    : state_(std::move(state)),
+    : state_(state),
       id_(id) {}
 
 RegistryDirtyFrameBroadcastSubscription::RegistryDirtyFrameBroadcastSubscription(

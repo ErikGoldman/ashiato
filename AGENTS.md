@@ -59,3 +59,8 @@ build-bench/benchmarks/basic_operations_benchmark \
 - `run_jobs()` is wired through the orchestrator-generated `JobGraph`; `RunJobsOptions::force_single_threaded`
   keeps execution inline/serial but still uses the scheduled graph.
 - Registered jobs are represented by entities for schedule identity. These job entities are identity-only in the current design and are not a job-removal/lifecycle API.
+
+## Linters
+
+- Ashiato CMake targets compile with strict warnings: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror` on GCC/Clang and `/W4 /WX` on MSVC.
+- Run `scripts/lint.sh` before changing ECS code. It configures a lint build with `ASHIATO_ENABLE_CLANG_TIDY=ON` and `ASHIATO_ENABLE_CPPCHECK=ON`, then builds the `ashiato` target so both tools run through CMake.

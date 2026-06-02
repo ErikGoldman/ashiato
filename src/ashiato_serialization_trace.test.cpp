@@ -8,11 +8,11 @@ TEST_CASE("serialization trace capture records nested bit ranges") {
 
     {
         ashiato::ScopedSerializationTraceScope header(&capture, "header");
-        payload.push_bits(0xab, 8U);
+        payload.write_bits(0xab, 8U);
     }
     {
         ashiato::ScopedSerializationTraceScope body(&capture, "body");
-        payload.push_bits(0xcdef, 16U);
+        payload.write_bits(0xcdef, 16U);
     }
 
     capture.finish();
@@ -36,12 +36,12 @@ TEST_CASE("serialization trace capture truncates rolled back scopes") {
 
     {
         ashiato::ScopedSerializationTraceScope kept(&capture, "kept");
-        payload.push_bits(0xab, 8U);
+        payload.write_bits(0xab, 8U);
     }
     const std::size_t rollback_bits = payload.bit_size();
     {
         ashiato::ScopedSerializationTraceScope rolled_back(&capture, "rolled_back");
-        payload.push_bits(0xcdef, 16U);
+        payload.write_bits(0xcdef, 16U);
     }
     payload.truncate_bits(rollback_bits);
     capture.truncate_to_bits(rollback_bits);
@@ -61,7 +61,7 @@ TEST_CASE("serialization trace scope can use component serialization context") {
 
     {
         ASHIATO_SERIALIZATION_TRACE_SCOPE("field");
-        payload.push_bits(0xab, 8U);
+        payload.write_bits(0xab, 8U);
     }
     capture.finish();
 

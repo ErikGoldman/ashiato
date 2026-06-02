@@ -467,7 +467,7 @@ std::unique_ptr<Registry::TypeErasedStorage> Registry::TypeErasedStorage::clone_
     return clone_compact_filtered(excluded, true);
 }
 
-Registry::TypeErasedStorage::TypeErasedStorage(ComponentInfo info, ComponentLifecycle lifecycle)
+Registry::TypeErasedStorage::TypeErasedStorage(ComponentInfo info, const ComponentLifecycle& lifecycle)
     : info_(info), lifecycle_(lifecycle) {}
 
 unsigned char* Registry::TypeErasedStorage::allocate(std::size_t capacity, const ComponentInfo& info) {
