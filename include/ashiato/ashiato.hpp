@@ -575,16 +575,16 @@ struct ComponentSerializationOps {
     bool uses_context = false;
 };
 
-template <typename T>
-struct ComponentSerializationTraits {
-    using Quantized = T;
+	template <typename T>
+	struct ComponentSerializationTraits {
+		using Quantized = T;
 
-    static Quantized quantize(const T& value) {
-        static_assert(
-            std::is_trivially_copyable<T>::value,
-            "default ComponentSerializationTraits require a trivially copyable component");
-        return value;
-    }
+		static void quantize(const T& value, Quantized& out) {
+			static_assert(
+				std::is_trivially_copyable<T>::value,
+				"default ComponentSerializationTraits require a trivially copyable component");
+			out = value;
+		}
 
     static T dequantize(const Quantized& value) {
         return value;
@@ -611,8 +611,32 @@ struct ComponentSerializationTraits {
             "default ComponentSerializationTraits deserialization requires a trivially copyable quantized state");
         in.read_bytes(reinterpret_cast<char*>(&out), sizeof(Quantized));
         return true;
-    }
+	}
 };
+
+namespace detail {
+template <typename Traits, typename T, typename Quantized, typename = void>
+struct has_quantize : std::false_type {};
+
+template <typename Traits, typename T, typename Quantized>
+struct has_quantize<
+	Traits,
+	T,
+	Quantized,
+	std::void_t<decltype(Traits::quantize(std::declval<const T&>(), std::declval<Quantized&>()))>> :
+	std::true_type {};
+
+template <typename T, typename Traits>
+typename Traits::Quantized quantize_component_canonical(const T& value) {
+	using Quantized = typename Traits::Quantized;
+	static_assert(
+		has_quantize<Traits, T, Quantized>::value,
+		"component serialization traits must implement static void quantize(const T&, Quantized&)");
+	Quantized quantized{};
+	Traits::quantize(value, quantized);
+	return quantized;
+}
+}  // namespace detail
 
 struct JobThreadTask {
     Entity job;
@@ -688,7 +712,7 @@ public:
     static constexpr std::uint32_t invalid_index = std::numeric_limits<std::uint32_t>::max();
 
     struct ComponentRemoval {
-        std::uint32_t entity_index = invalid_index;
+        Entity entity;
         bool entity_destroyed = false;
     };
 
@@ -770,7 +794,7 @@ public:
         for (auto& storage : storage_registry_.storages) {
             if (storage.second->contains_index(index)) {
                 remove_from_groups_before_component_removal(index, storage.first);
-                storage.second->remove_index_for_destroy(index);
+                storage.second->remove_for_destroy(entity);
             }
         }
 
@@ -841,7 +865,7 @@ public:
                 TypeErasedStorage& storage = storage_for(component);
                 const std::uint32_t singleton_index = entity_index(singleton_entity());
                 if (!storage.contains_index(singleton_index)) {
-                    storage.template emplace_or_replace<T>(singleton_index);
+                    storage.template emplace_or_replace<T>(singleton_entity());
                     storage.clear_added(singleton_index);
                 }
             }
@@ -899,7 +923,7 @@ public:
             TypeErasedStorage& storage = storage_for(component);
             const std::uint32_t singleton_index = entity_index(singleton_entity());
             if (!storage.contains_index(singleton_index)) {
-                storage.template emplace_or_replace<T>(singleton_index);
+                storage.template emplace_or_replace<T>(singleton_entity());
                 storage.clear_added(singleton_index);
             }
         }
@@ -936,7 +960,7 @@ public:
         }
 
         T* value = storage_for(component).emplace_or_replace<T>(
-            entity_index(entity),
+            entity,
             std::forward<Args>(args)...);
         refresh_group_after_add(entity_index(entity), entity_index(component));
         return value;
@@ -959,13 +983,13 @@ public:
             throw std::logic_error("ashiato tags cannot be ensured as writable components");
         }
         if (record.singleton) {
-            return storage_for(component).ensure(entity_index(singleton_entity()));
+            return storage_for(component).ensure(singleton_entity());
         }
         if (!alive(entity)) {
             return nullptr;
         }
 
-        void* ensured = storage_for(component).ensure(entity_index(entity));
+        void* ensured = storage_for(component).ensure(entity);
         refresh_group_after_add(entity_index(entity), entity_index(component));
         return ensured;
     }
@@ -993,7 +1017,7 @@ public:
                 return false;
             }
             remove_from_groups_before_component_removal(index, entity_index(component));
-            return found->remove(index);
+            return found->remove(entity);
         }
 
         return false;
@@ -1504,12 +1528,13 @@ private:
         ~TypeErasedStorage();
 
         template <typename T, typename... Args>
-        T* emplace_or_replace(std::uint32_t index, Args&&... args) {
+        T* emplace_or_replace(Entity entity, Args&&... args) {
             if (info_.tag) {
                 throw std::logic_error("ashiato tags do not store component values");
             }
             validate_type<T>();
 
+            const std::uint32_t index = Registry::entity_index(entity);
             if (void* existing = get(index)) {
                 mark_dirty_dense(sparse_[index]);
 
@@ -1526,7 +1551,7 @@ private:
             }
 
             ensure_sparse(index);
-            clear_tombstone(index);
+            clear_tombstone_for_entity(entity);
             ensure_capacity(size_ + 1);
 
             const std::uint32_t dense = static_cast<std::uint32_t>(size_);
@@ -1543,13 +1568,13 @@ private:
             return static_cast<T*>(target);
         }
 
-        void emplace_or_replace_tag(std::uint32_t index);
-        void* emplace_or_replace_bytes(std::uint32_t index, const void* value);
-        void emplace_or_replace_copy(std::uint32_t index, const void* value);
-        void* ensure(std::uint32_t index);
-        bool remove(std::uint32_t index);
+        void emplace_or_replace_tag(Entity entity);
+        void* emplace_or_replace_bytes(Entity entity, const void* value);
+        void emplace_or_replace_copy(Entity entity, const void* value);
+        void* ensure(Entity entity);
+        bool remove(Entity entity);
         void remove_index(std::uint32_t index);
-        void remove_index_for_destroy(std::uint32_t index);
+        void remove_for_destroy(Entity entity);
         void* get(std::uint32_t index);
         const void* get(std::uint32_t index) const;
         void* write(std::uint32_t index);
@@ -1597,7 +1622,7 @@ private:
                 }
 
                 callback(ComponentRemoval{
-                    tombstone_index_at(position),
+                    tombstone_entity_at(position),
                     has_destroy_tombstone_at_position(position),
                 });
             }
@@ -1607,6 +1632,7 @@ private:
         std::size_t tombstone_size() const noexcept;
         std::size_t tombstone_entry_count() const noexcept;
         std::uint32_t tombstone_index_at(std::size_t position) const;
+        Entity tombstone_entity_at(std::size_t position) const;
         unsigned char tombstone_flags_at(std::size_t position) const;
         bool has_dirty_tombstone_at(std::uint32_t index) const;
         bool has_dirty_tombstone_at_position(std::size_t position) const;
@@ -1668,8 +1694,10 @@ private:
         void ensure_capacity(std::size_t required);
         void erase_at(std::uint32_t dense);
         void clear() noexcept;
-        void mark_tombstone(std::uint32_t index, unsigned char flags);
+        void mark_tombstone(Entity entity, unsigned char flags);
+        void mark_tombstone_index(std::uint32_t index, unsigned char flags);
         void clear_tombstone(std::uint32_t index);
+        void clear_tombstone_for_entity(Entity entity);
         bool has_tombstone(std::uint32_t index) const;
         void mark_dirty_dense(std::uint32_t dense);
         void clear_dirty_dense(std::uint32_t dense);
@@ -1692,6 +1720,7 @@ private:
         std::vector<unsigned char> added_;
         std::vector<unsigned char> tombstones_;
         std::vector<std::uint32_t> tombstone_indices_;
+        std::vector<std::uint64_t> tombstone_entities_;
         unsigned char* data_ = nullptr;
         std::size_t size_ = 0;
         std::size_t capacity_ = 0;
@@ -2327,12 +2356,12 @@ ComponentSerializationOps make_component_serialization_ops(std::string name = {}
 
     ComponentSerializationOps ops;
     ops.name = std::move(name);
-    ops.component_size = sizeof(T);
-    ops.quantized_size = sizeof(Quantized);
-    ops.quantize = [](const void* value, std::uint8_t* out) {
-        const Quantized quantized = Traits::quantize(*static_cast<const T*>(value));
-        std::memcpy(out, &quantized, sizeof(Quantized));
-    };
+	ops.component_size = sizeof(T);
+	ops.quantized_size = sizeof(Quantized);
+	ops.quantize = [](const void* value, std::uint8_t* out) {
+		const Quantized quantized = detail::quantize_component_canonical<T, Traits>(*static_cast<const T*>(value));
+		std::memcpy(out, &quantized, sizeof(Quantized));
+	};
     ops.dequantize = [](const std::uint8_t* quantized_bytes, void* out) {
         Quantized quantized{};
         std::memcpy(&quantized, quantized_bytes, sizeof(Quantized));
@@ -2412,7 +2441,7 @@ public:
             Quantized quantized_value{};
             std::memcpy(&quantized_value, quantized, sizeof(Quantized));
             const T value = Traits::dequantize(quantized_value);
-            storage.emplace_or_replace_copy(index, &value);
+            storage.emplace_or_replace_copy(Entity{index}, &value);
         };
 
         entries_[found_record->second.name] = std::move(entry);

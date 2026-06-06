@@ -16,6 +16,7 @@ Registry::TypeErasedStorage::TypeErasedStorage(const TypeErasedStorage& other)
       added_(other.added_),
       tombstones_(other.tombstone_count_ == 0 ? std::vector<unsigned char>{} : other.tombstones_),
       tombstone_indices_(other.tombstone_count_ == 0 ? std::vector<std::uint32_t>{} : other.tombstone_indices_),
+      tombstone_entities_(other.tombstone_count_ == 0 ? std::vector<std::uint64_t>{} : other.tombstone_entities_),
       dirty_count_(other.dirty_count_),
       added_count_(other.added_count_),
       tombstone_count_(other.tombstone_count_),
@@ -41,6 +42,7 @@ Registry::TypeErasedStorage::TypeErasedStorage(TypeErasedStorage&& other) noexce
       added_(std::move(other.added_)),
       tombstones_(std::move(other.tombstones_)),
       tombstone_indices_(std::move(other.tombstone_indices_)),
+      tombstone_entities_(std::move(other.tombstone_entities_)),
       data_(other.data_),
       size_(other.size_),
       capacity_(other.capacity_),
@@ -69,6 +71,7 @@ Registry::TypeErasedStorage& Registry::TypeErasedStorage::operator=(TypeErasedSt
         dirty_ = std::move(other.dirty_);
         added_ = std::move(other.added_);
         tombstones_ = std::move(other.tombstones_);
+        tombstone_entities_ = std::move(other.tombstone_entities_);
         tombstone_indices_ = std::move(other.tombstone_indices_);
         data_ = other.data_;
         size_ = other.size_;
@@ -97,18 +100,19 @@ Registry::TypeErasedStorage::~TypeErasedStorage() {
     deallocate(data_, info_.alignment);
 }
 
-void Registry::TypeErasedStorage::emplace_or_replace_tag(std::uint32_t index) {
+void Registry::TypeErasedStorage::emplace_or_replace_tag(Entity entity) {
     if (!info_.tag) {
         throw std::logic_error("ashiato component storage is not a tag");
     }
 
+    const std::uint32_t index = Registry::entity_index(entity);
     if (contains(index)) {
         mark_dirty_dense(sparse_[index]);
         return;
     }
 
     ensure_sparse(index);
-    clear_tombstone(index);
+    clear_tombstone_for_entity(entity);
 
     const std::uint32_t dense = static_cast<std::uint32_t>(size_);
     dense_indices_.push_back(index);
@@ -120,7 +124,7 @@ void Registry::TypeErasedStorage::emplace_or_replace_tag(std::uint32_t index) {
     ++size_;
 }
 
-void* Registry::TypeErasedStorage::emplace_or_replace_bytes(std::uint32_t index, const void* value) {
+void* Registry::TypeErasedStorage::emplace_or_replace_bytes(Entity entity, const void* value) {
     if (info_.tag) {
         throw std::logic_error("ashiato tags do not store component values");
     }
@@ -128,6 +132,7 @@ void* Registry::TypeErasedStorage::emplace_or_replace_bytes(std::uint32_t index,
         throw std::logic_error("runtime byte add requires a trivially copyable component");
     }
 
+    const std::uint32_t index = Registry::entity_index(entity);
     if (void* existing = get(index)) {
         mark_dirty_dense(sparse_[index]);
         assign_bytes(existing, value);
@@ -135,7 +140,7 @@ void* Registry::TypeErasedStorage::emplace_or_replace_bytes(std::uint32_t index,
     }
 
     ensure_sparse(index);
-    clear_tombstone(index);
+    clear_tombstone_for_entity(entity);
     ensure_capacity(size_ + 1);
 
     const std::uint32_t dense = static_cast<std::uint32_t>(size_);
@@ -151,11 +156,12 @@ void* Registry::TypeErasedStorage::emplace_or_replace_bytes(std::uint32_t index,
     return target;
 }
 
-void Registry::TypeErasedStorage::emplace_or_replace_copy(std::uint32_t index, const void* value) {
+void Registry::TypeErasedStorage::emplace_or_replace_copy(Entity entity, const void* value) {
     if (info_.tag) {
-        emplace_or_replace_tag(index);
+        emplace_or_replace_tag(entity);
         return;
     }
+    const std::uint32_t index = Registry::entity_index(entity);
     if (void* existing = get(index)) {
         mark_dirty_dense(sparse_[index]);
         replace_copy(existing, value);
@@ -163,7 +169,7 @@ void Registry::TypeErasedStorage::emplace_or_replace_copy(std::uint32_t index, c
     }
 
     ensure_sparse(index);
-    clear_tombstone(index);
+    clear_tombstone_for_entity(entity);
     ensure_capacity(size_ + 1);
 
     const std::uint32_t dense = static_cast<std::uint32_t>(size_);
@@ -177,38 +183,41 @@ void Registry::TypeErasedStorage::emplace_or_replace_copy(std::uint32_t index, c
     ++size_;
 }
 
-void* Registry::TypeErasedStorage::ensure(std::uint32_t index) {
+void* Registry::TypeErasedStorage::ensure(Entity entity) {
     if (info_.tag) {
         throw std::logic_error("ashiato tags do not store component values");
     }
+    const std::uint32_t index = Registry::entity_index(entity);
     if (void* existing = write(index)) {
         return existing;
     }
 
-    return emplace_or_replace_bytes(index, nullptr);
+    return emplace_or_replace_bytes(entity, nullptr);
 }
 
-bool Registry::TypeErasedStorage::remove(std::uint32_t index) {
+bool Registry::TypeErasedStorage::remove(Entity entity) {
+    const std::uint32_t index = Registry::entity_index(entity);
     if (!contains(index)) {
         return false;
     }
 
     erase_at(sparse_[index]);
-    mark_tombstone(index, tombstone_dirty);
+    mark_tombstone(entity, tombstone_dirty);
     return true;
 }
 
 void Registry::TypeErasedStorage::remove_index(std::uint32_t index) {
-    (void)remove(index);
+    (void)remove(Entity{index});
 }
 
-void Registry::TypeErasedStorage::remove_index_for_destroy(std::uint32_t index) {
+void Registry::TypeErasedStorage::remove_for_destroy(Entity entity) {
+    const std::uint32_t index = Registry::entity_index(entity);
     if (!contains(index)) {
         return;
     }
 
     erase_at(sparse_[index]);
-    mark_tombstone(index, tombstone_dirty | tombstone_destroy_entity);
+    mark_tombstone(entity, tombstone_dirty | tombstone_destroy_entity);
 }
 
 void* Registry::TypeErasedStorage::get(std::uint32_t index) {
@@ -301,6 +310,7 @@ void Registry::TypeErasedStorage::clear_all_dirty() {
     std::fill(dirty_.begin(), dirty_.end(), std::uint8_t{0});
     std::fill(added_.begin(), added_.end(), std::uint8_t{0});
     std::fill(tombstones_.begin(), tombstones_.end(), no_tombstone);
+    std::fill(tombstone_entities_.begin(), tombstone_entities_.end(), 0);
     tombstone_indices_.clear();
     dirty_count_ = 0;
     added_count_ = 0;
@@ -355,6 +365,21 @@ unsigned char Registry::TypeErasedStorage::tombstone_flags_at(std::size_t positi
         return tombstones_[position];
     }
     return tombstones_[tombstone_indices_[position]];
+}
+
+Entity Registry::TypeErasedStorage::tombstone_entity_at(std::size_t position) const {
+    const std::uint32_t index = tombstone_indices_[position];
+    if (compact_lookup_) {
+        if (position < tombstone_entities_.size() && tombstone_entities_[position] != 0) {
+            return Entity{tombstone_entities_[position]};
+        }
+        return Entity{index};
+    }
+
+    if (index < tombstone_entities_.size() && tombstone_entities_[index] != 0) {
+        return Entity{tombstone_entities_[index]};
+    }
+    return Entity{index};
 }
 
 bool Registry::TypeErasedStorage::has_dirty_tombstone_at(std::uint32_t index) const {
@@ -547,6 +572,9 @@ void Registry::TypeErasedStorage::ensure_sparse(std::uint32_t index) {
     if (index >= tombstones_.size()) {
         tombstones_.resize(static_cast<std::size_t>(index) + 1, no_tombstone);
     }
+    if (index >= tombstone_entities_.size()) {
+        tombstone_entities_.resize(static_cast<std::size_t>(index) + 1, 0);
+    }
 }
 
 bool Registry::TypeErasedStorage::contains(std::uint32_t index) const {
@@ -652,14 +680,19 @@ void Registry::TypeErasedStorage::clear() noexcept {
     added_.clear();
     std::fill(sparse_.begin(), sparse_.end(), npos);
     std::fill(tombstones_.begin(), tombstones_.end(), no_tombstone);
+    std::fill(tombstone_entities_.begin(), tombstone_entities_.end(), 0);
     tombstone_indices_.clear();
     dirty_count_ = 0;
     added_count_ = 0;
     tombstone_count_ = 0;
 }
 
-void Registry::TypeErasedStorage::mark_tombstone(std::uint32_t index, unsigned char flags) {
+void Registry::TypeErasedStorage::mark_tombstone(Entity entity, unsigned char flags) {
+    const std::uint32_t index = Registry::entity_index(entity);
     ensure_sparse(index);
+    if (tombstone_entities_.size() < tombstones_.size()) {
+        tombstone_entities_.resize(tombstones_.size(), 0);
+    }
     if (tombstones_[index] == no_tombstone && flags != no_tombstone) {
         ++tombstone_count_;
         tombstone_indices_.push_back(index);
@@ -668,14 +701,34 @@ void Registry::TypeErasedStorage::mark_tombstone(std::uint32_t index, unsigned c
         erase_tombstone_index(index);
     }
     tombstones_[index] = flags;
+    tombstone_entities_[index] = flags != no_tombstone ? entity.value : 0;
+}
+
+void Registry::TypeErasedStorage::mark_tombstone_index(std::uint32_t index, unsigned char flags) {
+    mark_tombstone(Entity{index}, flags);
 }
 
 void Registry::TypeErasedStorage::clear_tombstone(std::uint32_t index) {
     if (index < tombstones_.size() && tombstones_[index] != no_tombstone) {
         tombstones_[index] = no_tombstone;
+        if (index < tombstone_entities_.size()) {
+            tombstone_entities_[index] = 0;
+        }
         erase_tombstone_index(index);
         --tombstone_count_;
     }
+}
+
+void Registry::TypeErasedStorage::clear_tombstone_for_entity(Entity entity) {
+    const std::uint32_t index = Registry::entity_index(entity);
+    if (index >= tombstones_.size() || tombstones_[index] == no_tombstone) {
+        return;
+    }
+    if (index >= tombstone_entities_.size() || tombstone_entities_[index] != entity.value) {
+        return;
+    }
+
+    clear_tombstone(index);
 }
 
 bool Registry::TypeErasedStorage::has_tombstone(std::uint32_t index) const {
@@ -834,6 +887,7 @@ void Registry::TypeErasedStorage::copy_compact_tombstones_excluding(
 
     copy.tombstone_indices_.reserve(tombstone_indices_.size());
     copy.tombstones_.reserve(tombstone_indices_.size());
+    copy.tombstone_entities_.reserve(tombstone_indices_.size());
     for (std::uint32_t index : tombstone_indices_) {
         if (index < excluded.size() && excluded[index]) {
             continue;
@@ -844,6 +898,11 @@ void Registry::TypeErasedStorage::copy_compact_tombstones_excluding(
         }
         copy.tombstone_indices_.push_back(index);
         copy.tombstones_.push_back(flags);
+        const std::uint64_t entity_value =
+            index < tombstone_entities_.size() && tombstone_entities_[index] != 0
+                ? tombstone_entities_[index]
+                : Entity{index}.value;
+        copy.tombstone_entities_.push_back(entity_value);
         ++copy.tombstone_count_;
     }
 }
@@ -863,18 +922,28 @@ void Registry::TypeErasedStorage::rebuild_lookup() {
     }
 
     std::vector<unsigned char> rebuilt_tombstones(lookup_size, no_tombstone);
+    std::vector<std::uint64_t> rebuilt_tombstone_entities(lookup_size, 0);
     if (compact_lookup_) {
         for (std::size_t position = 0; position < tombstone_indices_.size(); ++position) {
-            rebuilt_tombstones[tombstone_indices_[position]] = tombstones_[position];
+            const std::uint32_t index = tombstone_indices_[position];
+            rebuilt_tombstones[index] = tombstones_[position];
+            rebuilt_tombstone_entities[index] =
+                position < tombstone_entities_.size() && tombstone_entities_[position] != 0
+                    ? tombstone_entities_[position]
+                    : Entity{index}.value;
         }
     } else {
         for (std::uint32_t index : tombstone_indices_) {
             if (index < tombstones_.size()) {
                 rebuilt_tombstones[index] = tombstones_[index];
             }
+            if (index < tombstone_entities_.size()) {
+                rebuilt_tombstone_entities[index] = tombstone_entities_[index];
+            }
         }
     }
     tombstones_ = std::move(rebuilt_tombstones);
+    tombstone_entities_ = std::move(rebuilt_tombstone_entities);
     compact_lookup_ = false;
 }
 

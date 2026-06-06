@@ -43,13 +43,13 @@ TEST_CASE("dirty component iteration exposes current values and removal tombston
 
     REQUIRE(removals.size() == 2);
     auto second_removal = std::find_if(removals.begin(), removals.end(), [&](const auto& removal) {
-        return removal.entity_index == ashiato::Registry::entity_index(second);
+        return removal.entity == second;
     });
     REQUIRE(second_removal != removals.end());
     REQUIRE_FALSE(second_removal->entity_destroyed);
 
     auto destroyed_removal = std::find_if(removals.begin(), removals.end(), [&](const auto& removal) {
-        return removal.entity_index == ashiato::Registry::entity_index(destroyed);
+        return removal.entity == destroyed;
     });
     REQUIRE(destroyed_removal != removals.end());
     REQUIRE(destroyed_removal->entity_destroyed);
@@ -143,7 +143,32 @@ TEST_CASE("dirty component addition tracking collapses add remove and remove add
         removals.push_back(removal);
     });
     REQUIRE(removals.size() == 1);
-    REQUIRE(removals[0].entity_index == ashiato::Registry::entity_index(added_then_removed));
+    REQUIRE(removals[0].entity == added_then_removed);
+    REQUIRE_FALSE(removals[0].entity_destroyed);
+}
+
+TEST_CASE("dirty component removals preserve entity generation across index reuse") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+
+    const ashiato::Entity original = registry.create();
+    REQUIRE(registry.add<Position>(original, Position{1, 2}) != nullptr);
+    registry.clear_all_dirty<Position>();
+
+    REQUIRE(registry.remove<Position>(original));
+    REQUIRE(registry.destroy(original));
+    const ashiato::Entity reused = registry.create();
+    REQUIRE(ashiato::Registry::entity_index(reused) == ashiato::Registry::entity_index(original));
+    REQUIRE(reused != original);
+    REQUIRE(registry.add<Position>(reused, Position{3, 4}) != nullptr);
+
+    std::vector<ashiato::Registry::ComponentRemoval> removals;
+    registry.each_removed<Position>([&](ashiato::Registry::ComponentRemoval removal) {
+        removals.push_back(removal);
+    });
+
+    REQUIRE(removals.size() == 1);
+    REQUIRE(removals[0].entity == original);
     REQUIRE_FALSE(removals[0].entity_destroyed);
 }
 

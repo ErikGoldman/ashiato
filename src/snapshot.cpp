@@ -225,7 +225,7 @@ void write_storage(std::ostream& out, const Registry::TypeErasedStorage& storage
     }
     detail::write_pod<std::uint64_t>(out, static_cast<std::uint64_t>(storage.tombstone_entry_count()));
     for (std::size_t position = 0; position < storage.tombstone_entry_count(); ++position) {
-        detail::write_pod<std::uint32_t>(out, storage.tombstone_index_at(position));
+        detail::write_pod<std::uint64_t>(out, storage.tombstone_entity_at(position).value);
         detail::write_pod<unsigned char>(out, storage.tombstone_flags_at(position));
     }
 }
@@ -239,14 +239,15 @@ std::unique_ptr<Registry::TypeErasedStorage> read_storage(
         const auto entity_index = detail::read_pod<std::uint32_t>(in);
         const auto dirty = detail::read_pod<std::uint8_t>(in);
         const auto added = detail::read_pod<std::uint8_t>(in);
+        const Entity entity{entity_index};
         if (record.info.tag) {
-            storage->emplace_or_replace_tag(entity_index);
+            storage->emplace_or_replace_tag(entity);
         } else {
             std::vector<unsigned char> bytes(record.info.size);
             if (!bytes.empty()) {
                 detail::read_exact(in, bytes.data(), bytes.size());
             }
-            storage->emplace_or_replace_bytes(entity_index, bytes.empty() ? nullptr : bytes.data());
+            storage->emplace_or_replace_bytes(entity, bytes.empty() ? nullptr : bytes.data());
         }
         if (dirty == 0U) {
             storage->clear_dirty(entity_index);
@@ -256,9 +257,9 @@ std::unique_ptr<Registry::TypeErasedStorage> read_storage(
     }
     const auto tombstone_count = detail::read_pod<std::uint64_t>(in);
     for (std::uint64_t position = 0; position < tombstone_count; ++position) {
-        const auto entity_index = detail::read_pod<std::uint32_t>(in);
+        const Entity entity{detail::read_pod<std::uint64_t>(in)};
         const auto flags = detail::read_pod<unsigned char>(in);
-        storage->mark_tombstone(entity_index, flags);
+        storage->mark_tombstone(entity, flags);
     }
     storage->rebuild_lookup();
     return storage;
@@ -752,7 +753,7 @@ static void write_persistent_storages(
 
         detail::write_bits(body, static_cast<std::uint64_t>(storage.tombstone_entry_count()), 32U);
         for (std::size_t position = 0; position < storage.tombstone_entry_count(); ++position) {
-            detail::write_bits(body, storage.tombstone_index_at(position), 32U);
+            detail::write_bits(body, storage.tombstone_entity_at(position).value, 64U);
             detail::write_bits(body, storage.tombstone_flags_at(position), 8U);
         }
     }
@@ -778,8 +779,9 @@ static std::unique_ptr<Registry::TypeErasedStorage> read_persistent_storage(
         if (record.singleton) {
             entity_index = singleton_index;
         }
+        const Entity entity{entity_index};
         if (record.info.tag) {
-            storage->emplace_or_replace_tag(entity_index);
+            storage->emplace_or_replace_tag(entity);
         } else {
             BitBuffer payload = read_payload(body);
             const ComponentSerializationOps& ops = serialization_entry->ops;
@@ -803,9 +805,9 @@ static std::unique_ptr<Registry::TypeErasedStorage> read_persistent_storage(
 
     const auto tombstone_count = detail::read_bits(body, 32U);
     for (std::uint64_t position = 0; position < tombstone_count; ++position) {
-        const auto entity_index = static_cast<std::uint32_t>(detail::read_bits(body, 32U));
+        const Entity entity{detail::read_bits(body, 64U)};
         const auto flags = static_cast<unsigned char>(detail::read_bits(body, 8U));
-        storage->mark_tombstone(entity_index, flags);
+        storage->mark_tombstone(entity, flags);
     }
     return storage;
 }
@@ -1269,23 +1271,24 @@ void Registry::restore_delta_snapshot(const DeltaSnapshot& snapshot) {
         entity_store_.free_head = rebuild_free_list(entity_store_.slots);
     }
 
-    std::vector<std::uint32_t> destroyed_indices;
+    std::vector<Entity> destroyed_entities;
     for (const auto& storage : snapshot.storages_) {
         const TypeErasedStorage& delta_storage = *storage.second;
         for (std::size_t tombstone = 0; tombstone < delta_storage.tombstone_entry_count(); ++tombstone) {
-            const std::uint32_t entity_index = delta_storage.tombstone_index_at(tombstone);
+            const Entity entity = delta_storage.tombstone_entity_at(tombstone);
             if (delta_storage.has_destroy_tombstone_at_position(tombstone) &&
-                std::find(destroyed_indices.begin(), destroyed_indices.end(), entity_index) == destroyed_indices.end()) {
-                destroyed_indices.push_back(entity_index);
+                std::find(destroyed_entities.begin(), destroyed_entities.end(), entity) == destroyed_entities.end()) {
+                destroyed_entities.push_back(entity);
             }
         }
     }
 
-    for (std::uint32_t index : destroyed_indices) {
+    for (Entity entity : destroyed_entities) {
+        const std::uint32_t index = entity_index(entity);
         for (auto& storage : storage_registry_.storages) {
             if (storage.second->contains_index(index)) {
                 remove_from_groups_before_component_removal(index, storage.first);
-                storage.second->remove_index(index);
+                storage.second->remove_for_destroy(entity);
             }
         }
     }
@@ -1301,16 +1304,17 @@ void Registry::restore_delta_snapshot(const DeltaSnapshot& snapshot) {
         TypeErasedStorage* target_storage = find_storage(component);
 
         for (std::size_t tombstone = 0; tombstone < delta_storage.tombstone_entry_count(); ++tombstone) {
-            const std::uint32_t entity_index = delta_storage.tombstone_index_at(tombstone);
+            const Entity entity = delta_storage.tombstone_entity_at(tombstone);
+            const std::uint32_t removed_entity_index = entity_index(entity);
             if (!delta_storage.has_dirty_tombstone_at_position(tombstone) ||
                 delta_storage.has_destroy_tombstone_at_position(tombstone)) {
                 continue;
             }
-            if (target_storage == nullptr || !target_storage->contains_index(entity_index)) {
+            if (target_storage == nullptr || !target_storage->contains_index(removed_entity_index)) {
                 throw std::logic_error("ashiato delta snapshot component removal does not match registry state");
             }
-            remove_from_groups_before_component_removal(entity_index, component_index);
-            target_storage->remove_index(entity_index);
+            remove_from_groups_before_component_removal(removed_entity_index, component_index);
+            target_storage->remove(entity);
         }
 
         for (std::size_t dense = 0; dense < delta_storage.dense_size(); ++dense) {
@@ -1318,7 +1322,7 @@ void Registry::restore_delta_snapshot(const DeltaSnapshot& snapshot) {
             if (entity_index >= entity_store_.slots.size() || slot_index(entity_store_.slots[entity_index]) != entity_index) {
                 throw std::logic_error("ashiato delta snapshot entity is not alive");
             }
-            storage_for(component).emplace_or_replace_copy(entity_index, delta_storage.get_dense(dense));
+            storage_for(component).emplace_or_replace_copy(Entity{entity_index}, delta_storage.get_dense(dense));
             refresh_group_after_add(entity_index, component_index);
         }
     }

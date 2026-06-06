@@ -89,7 +89,7 @@ bool Registry::add_tag(Entity entity, Entity tag) {
         return false;
     }
 
-    storage_for(tag).emplace_or_replace_tag(entity_index(entity));
+    storage_for(tag).emplace_or_replace_tag(entity);
     refresh_group_after_add(entity_index(entity), entity_index(tag));
     return true;
 }
@@ -106,13 +106,13 @@ void* Registry::add(Entity entity, Entity component, const void* value) {
         throw std::logic_error("ashiato tags cannot be added as writable components");
     }
     if (record.singleton) {
-        return storage_for(component).emplace_or_replace_bytes(entity_index(singleton_entity()), value);
+        return storage_for(component).emplace_or_replace_bytes(singleton_entity(), value);
     }
     if (!alive(entity)) {
         return nullptr;
     }
 
-    void* added = storage_for(component).emplace_or_replace_bytes(entity_index(entity), value);
+    void* added = storage_for(component).emplace_or_replace_bytes(entity, value);
     refresh_group_after_add(entity_index(entity), entity_index(component));
     return added;
 }
@@ -822,14 +822,14 @@ void Registry::add_system_tag(Entity entity) {
     if (!component_catalog_.system_tag || !alive(entity)) {
         return;
     }
-    storage_for(component_catalog_.system_tag).emplace_or_replace_tag(entity_index(entity));
+    storage_for(component_catalog_.system_tag).emplace_or_replace_tag(entity);
 }
 
 void Registry::add_job_tag(Entity entity) {
     if (!component_catalog_.job_tag || !alive(entity)) {
         return;
     }
-    storage_for(component_catalog_.job_tag).emplace_or_replace_tag(entity_index(entity));
+    storage_for(component_catalog_.job_tag).emplace_or_replace_tag(entity);
 }
 
 void Registry::canonicalize_components(std::vector<std::uint32_t>& components) {

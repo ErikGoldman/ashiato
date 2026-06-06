@@ -14,8 +14,8 @@ struct CountingPositionTraits {
     static int serialize_calls;
     static int deserialize_calls;
 
-    static Quantized quantize(const Position& value) {
-        return value;
+    static void quantize(const Position& value, Quantized& out) {
+        out = value;
     }
 
     static Position dequantize(const Quantized& value) {
@@ -82,10 +82,9 @@ struct OverAlignedPersistentTraits {
         return (reinterpret_cast<std::uintptr_t>(value) % alignof(Quantized)) == 0U;
     }
 
-    static Quantized quantize(const OverAlignedPersistentComponent& value) {
-        Quantized quantized{};
-        quantized.value = static_cast<std::int32_t>(value.value);
-        return quantized;
+    static void quantize(const OverAlignedPersistentComponent& value, Quantized& out) {
+        out = Quantized{};
+        out.value = static_cast<std::int32_t>(value.value);
     }
 
     static OverAlignedPersistentComponent dequantize(const Quantized& value) {
@@ -120,8 +119,8 @@ bool OverAlignedPersistentTraits::all_aligned = true;
 struct ContextPositionSerializationTraits {
     using Quantized = Position;
 
-    static Quantized quantize(const Position& value) {
-        return value;
+    static void quantize(const Position& value, Quantized& out) {
+        out = value;
     }
 
     static Position dequantize(const Quantized& value) {
