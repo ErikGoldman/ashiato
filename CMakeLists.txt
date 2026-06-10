@@ -131,7 +131,10 @@ target_sources(ashiato
 
 add_library(ashiato::ashiato ALIAS ashiato)
 
-target_compile_features(ashiato PUBLIC cxx_std_17)
+set_target_properties(ashiato PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED YES
+)
 
 if(ASHIATO_ENABLE_DEBUG_SERVER)
     target_compile_definitions(ashiato PUBLIC ASHIATO_ENABLE_DEBUG_SERVER=1)
