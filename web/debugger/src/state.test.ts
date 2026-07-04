@@ -28,7 +28,7 @@ const servers: DiscoveredServer[] = [
           }
         }
       ],
-      jobs: [{ id: "20", name: "Move balls", order: 1, structural: false, singleThread: true, maxThreads: 1, minEntitiesPerThread: 1, reads: [], writes: [] }],
+      jobs: [{ id: "20", name: "Move balls", order: 1, structural: false, singleThread: true, maxThreads: 1, minEntitiesPerThread: 1, matchingEntityCount: 2, reads: [], writes: [], accesses: [], without: [] }],
       registeredTags: []
     }
   }
@@ -62,8 +62,11 @@ describe("reconcileSelection", () => {
         singleThread: true,
         maxThreads: 1,
         minEntitiesPerThread: 1,
+        matchingEntityCount: 2,
         reads: [],
         writes: [],
+        accesses: [],
+        without: [],
         matchingEntities: []
       }
     };

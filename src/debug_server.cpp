@@ -1012,6 +1012,7 @@ private:
             << ",\"singleThread\":" << (job.single_thread ? "true" : "false")
             << ",\"maxThreads\":" << job.max_threads
             << ",\"minEntitiesPerThread\":" << job.min_entities_per_thread
+            << ",\"matchingEntityCount\":" << registry_.job_matching_entities(job.entity).size()
             << ",\"reads\":[";
         for (std::size_t i = 0; i < job.reads.size(); ++i) {
             if (i != 0) {
@@ -1025,6 +1026,20 @@ private:
                 out << ",";
             }
             append_component_ref(out, registry_, job.writes[i]);
+        }
+        out << "],\"accesses\":[";
+        for (std::size_t i = 0; i < job.accesses.size(); ++i) {
+            if (i != 0) {
+                out << ",";
+            }
+            append_component_ref(out, registry_, job.accesses[i]);
+        }
+        out << "],\"without\":[";
+        for (std::size_t i = 0; i < job.without.size(); ++i) {
+            if (i != 0) {
+                out << ",";
+            }
+            append_component_ref(out, registry_, job.without[i]);
         }
         out << "]}";
     }
@@ -1037,6 +1052,7 @@ private:
             << ",\"singleThread\":" << (job.single_thread ? "true" : "false")
             << ",\"maxThreads\":" << job.max_threads
             << ",\"minEntitiesPerThread\":" << job.min_entities_per_thread
+            << ",\"matchingEntityCount\":" << registry_.job_matching_entities(job.entity).size()
             << ",\"reads\":[";
         for (std::size_t i = 0; i < job.reads.size(); ++i) {
             if (i != 0) {
@@ -1050,6 +1066,20 @@ private:
                 out << ",";
             }
             append_component_ref(out, registry_, job.writes[i]);
+        }
+        out << "],\"accesses\":[";
+        for (std::size_t i = 0; i < job.accesses.size(); ++i) {
+            if (i != 0) {
+                out << ",";
+            }
+            append_component_ref(out, registry_, job.accesses[i]);
+        }
+        out << "],\"without\":[";
+        for (std::size_t i = 0; i < job.without.size(); ++i) {
+            if (i != 0) {
+                out << ",";
+            }
+            append_component_ref(out, registry_, job.without[i]);
         }
         out << "],\"matchingEntities\":[";
         const std::vector<Entity> matches = registry_.job_matching_entities(job.entity);

@@ -34,8 +34,11 @@ export interface JobSummary {
   singleThread: boolean;
   maxThreads: number;
   minEntitiesPerThread: number;
+  matchingEntityCount: number;
   reads: Array<ComponentRef | string>;
   writes: Array<ComponentRef | string>;
+  accesses: Array<ComponentRef | string>;
+  without: Array<ComponentRef | string>;
 }
 
 export interface RegisteredTag {

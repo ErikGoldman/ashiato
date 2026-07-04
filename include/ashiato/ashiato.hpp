@@ -339,6 +339,8 @@ struct JobInfo {
     int order = 0;
     std::vector<Entity> reads;
     std::vector<Entity> writes;
+    std::vector<Entity> accesses;
+    std::vector<Entity> without;
     bool structural = false;
     bool single_thread = true;
     std::size_t max_threads = 1;
@@ -1811,6 +1813,10 @@ private:
         std::uint64_t sequence = 0;
         std::vector<std::uint32_t> reads;
         std::vector<std::uint32_t> writes;
+        std::vector<std::uint32_t> debug_reads;
+        std::vector<std::uint32_t> debug_writes;
+        std::vector<std::uint32_t> debug_accesses;
+        std::vector<std::uint32_t> debug_without;
         std::function<void(Registry&)> run;
         std::function<std::vector<std::uint32_t>(Registry&)> collect_indices;
         std::function<void(Registry&, const std::vector<std::uint32_t>&, std::size_t, std::size_t)> run_range;
@@ -1824,6 +1830,10 @@ private:
     struct JobAccessMetadata {
         std::vector<std::uint32_t> reads;
         std::vector<std::uint32_t> writes;
+        std::vector<std::uint32_t> accesses;
+        std::vector<std::uint32_t> without;
+        std::vector<std::uint32_t> dependency_reads;
+        std::vector<std::uint32_t> dependency_writes;
     };
 
     static void canonicalize_components(std::vector<std::uint32_t>& components);
@@ -1836,15 +1846,47 @@ private:
         const std::uint32_t component_index = entity_index(component);
         if constexpr (std::is_const<typename std::remove_reference<T>::type>::value) {
             append_unique_component(metadata.reads, component_index);
+            append_unique_component(metadata.dependency_reads, component_index);
         } else {
             append_unique_component(metadata.writes, component_index);
+            append_unique_component(metadata.dependency_writes, component_index);
         }
     }
 
     template <typename T>
-    void append_job_filter_component(JobAccessMetadata& metadata) const {
+    void append_job_external_access_component(JobAccessMetadata& metadata) const {
         const Entity component = registered_component<detail::component_query_t<T>>();
-        append_unique_component(metadata.reads, entity_index(component));
+        const std::uint32_t component_index = entity_index(component);
+        append_unique_component(metadata.accesses, component_index);
+        if constexpr (std::is_const<typename std::remove_reference<T>::type>::value) {
+            append_unique_component(metadata.dependency_reads, component_index);
+        } else {
+            append_unique_component(metadata.dependency_writes, component_index);
+        }
+    }
+
+    template <typename T>
+    void append_job_with_filter_component(JobAccessMetadata& metadata) const {
+        const Entity component = registered_component<detail::component_query_t<T>>();
+        const std::uint32_t component_index = entity_index(component);
+        append_unique_component(metadata.reads, component_index);
+        append_unique_component(metadata.dependency_reads, component_index);
+    }
+
+    template <typename T>
+    void append_job_without_filter_component(JobAccessMetadata& metadata) const {
+        const Entity component = registered_component<detail::component_query_t<T>>();
+        const std::uint32_t component_index = entity_index(component);
+        append_unique_component(metadata.without, component_index);
+        append_unique_component(metadata.dependency_reads, component_index);
+    }
+
+    template <typename T>
+    void append_job_structural_component(JobAccessMetadata& metadata) const {
+        const Entity component = registered_component<detail::component_query_t<T>>();
+        const std::uint32_t component_index = entity_index(component);
+        append_unique_component(metadata.writes, component_index);
+        append_unique_component(metadata.dependency_writes, component_index);
     }
 
     template <typename... Components>
@@ -1864,17 +1906,26 @@ private:
     }
 
     template <typename... Components>
-    void append_job_filter_metadata(JobAccessMetadata& metadata) const {
-        (append_job_filter_component<Components>(metadata), ...);
+    void append_job_external_access_metadata(JobAccessMetadata& metadata) const {
+        (append_job_external_access_component<Components>(metadata), ...);
+        canonicalize_job_metadata(metadata);
+    }
+
+    template <typename... Components>
+    void append_job_with_filter_metadata(JobAccessMetadata& metadata) const {
+        (append_job_with_filter_component<Components>(metadata), ...);
+        canonicalize_job_metadata(metadata);
+    }
+
+    template <typename... Components>
+    void append_job_without_filter_metadata(JobAccessMetadata& metadata) const {
+        (append_job_without_filter_component<Components>(metadata), ...);
         canonicalize_job_metadata(metadata);
     }
 
     template <typename... Components>
     void append_job_structural_metadata(JobAccessMetadata& metadata) const {
-        (append_unique_component(
-             metadata.writes,
-             entity_index(registered_component<detail::component_query_t<Components>>())),
-         ...);
+        (append_job_structural_component<Components>(metadata), ...);
         canonicalize_job_metadata(metadata);
     }
 
@@ -4589,9 +4640,10 @@ public:
     Entity each(Fn&& fn) {
         using Callback = typename std::decay<Fn>::type;
         auto callback = std::make_shared<Callback>(std::forward<Fn>(fn));
-        JobAccessMetadata metadata =
-            registry_->template make_job_access_metadata<IterComponents..., AccessComponents..., OptionalComponents...>();
-        registry_->template append_job_filter_metadata<WithTags..., WithoutTags...>(metadata);
+        JobAccessMetadata metadata = registry_->template make_job_access_metadata<IterComponents..., OptionalComponents...>();
+        registry_->template append_job_external_access_metadata<AccessComponents...>(metadata);
+        registry_->template append_job_with_filter_metadata<WithTags...>(metadata);
+        registry_->template append_job_without_filter_metadata<WithoutTags...>(metadata);
         return registry_->add_job(
             order_,
             name_,
@@ -4815,8 +4867,10 @@ public:
     Entity each(Fn&& fn) {
         using Callback = typename std::decay<Fn>::type;
         auto callback = std::make_shared<Callback>(std::forward<Fn>(fn));
-        JobAccessMetadata metadata = registry_->template make_job_access_metadata<IterComponents..., AccessComponents...>();
-        registry_->template append_job_filter_metadata<WithTags..., WithoutTags...>(metadata);
+        JobAccessMetadata metadata = registry_->template make_job_access_metadata<IterComponents...>();
+        registry_->template append_job_external_access_metadata<AccessComponents...>(metadata);
+        registry_->template append_job_with_filter_metadata<WithTags...>(metadata);
+        registry_->template append_job_without_filter_metadata<WithoutTags...>(metadata);
         registry_->template append_job_structural_metadata<StructuralComponents...>(metadata);
         threading_.single_thread = true;
         threading_.max_threads = 1;
@@ -5144,10 +5198,12 @@ public:
     Entity each(Fn&& fn) {
         using Callback = typename std::decay<Fn>::type;
         auto callback = std::make_shared<Callback>(std::forward<Fn>(fn));
+        JobAccessMetadata metadata = registry_->template make_job_access_metadata<IterComponents..., OptionalComponents...>();
+        registry_->template append_job_external_access_metadata<AccessComponents...>(metadata);
         return registry_->add_job(
             order_,
             name_,
-            registry_->template make_job_access_metadata<IterComponents..., AccessComponents..., OptionalComponents...>(),
+            std::move(metadata),
             [callback](Registry& registry) mutable {
                 auto view = make_view(registry);
                 view.job_callback_scope().each(*callback);
@@ -5358,8 +5414,8 @@ public:
     Entity each(Fn&& fn) {
         using Callback = typename std::decay<Fn>::type;
         auto callback = std::make_shared<Callback>(std::forward<Fn>(fn));
-        JobAccessMetadata metadata =
-            registry_->template make_job_access_metadata<IterComponents..., AccessComponents..., OptionalComponents...>();
+        JobAccessMetadata metadata = registry_->template make_job_access_metadata<IterComponents..., OptionalComponents...>();
+        registry_->template append_job_external_access_metadata<AccessComponents...>(metadata);
         registry_->template append_job_structural_metadata<StructuralComponents...>(metadata);
         threading_.single_thread = true;
         threading_.max_threads = 1;

@@ -71,7 +71,7 @@ export const SINGLETONS_QUERY = `
 
 export const JOBS_QUERY = `
   query Jobs {
-    jobs { id name order structural singleThread maxThreads minEntitiesPerThread reads { component name singleton } writes { component name singleton } }
+    jobs { id name order structural singleThread maxThreads minEntitiesPerThread matchingEntityCount reads { component name singleton } writes { component name singleton } accesses { component name singleton } without { component name singleton } }
   }
 `;
 
@@ -92,7 +92,7 @@ export const ENTITY_QUERY = `
     entity(id: $id) {
       id index version kind displayName
       components { component name tag singleton dirty debugValue fields { name type value } }
-      matchingJobs { id name order structural singleThread maxThreads minEntitiesPerThread reads { component name singleton } writes { component name singleton } }
+      matchingJobs { id name order structural singleThread maxThreads minEntitiesPerThread matchingEntityCount reads { component name singleton } writes { component name singleton } accesses { component name singleton } without { component name singleton } }
     }
   }
 `;
@@ -100,7 +100,7 @@ export const ENTITY_QUERY = `
 export const JOB_QUERY = `
   query JobDetail($id: ID!) {
     job(id: $id) {
-      id name order structural singleThread maxThreads minEntitiesPerThread reads { component name singleton } writes { component name singleton }
+      id name order structural singleThread maxThreads minEntitiesPerThread matchingEntityCount reads { component name singleton } writes { component name singleton } accesses { component name singleton } without { component name singleton }
       matchingEntities { id index version kind displayName }
     }
   }

@@ -338,8 +338,13 @@ export function App() {
                     className={`list-row ${job.id === state.selectedJobId ? "selected" : ""}`}
                     onClick={() => setState((previous) => ({ ...previous, selectedJobId: job.id }))}
                   >
-                    <span>{jobTitle(job)}</span>
-                    <small>{job.id}</small>
+                    <span className="job-row-main">
+                      <span>{jobTitle(job)}</span>
+                      <small>{job.id}</small>
+                    </span>
+                    <span className="job-match-count" title="Matching entities">
+                      {job.matchingEntityCount}
+                    </span>
                   </button>
                 ))}
                 {filteredJobs.length === 0 && <EmptyInline text="No matching jobs." />}
@@ -474,7 +479,9 @@ function SingletonDetailView(props: {
   onChanged: () => void;
 }) {
   const matchingJobs = props.jobs.filter((job) =>
-    [...job.reads, ...job.writes].some((component) => componentRefId(component) === props.singleton.component.component)
+    [...job.reads, ...job.writes, ...job.accesses].some(
+      (component) => componentRefId(component) === props.singleton.component.component
+    )
   );
   return (
     <div className="detail">
@@ -527,6 +534,22 @@ function TagControls(props: {
   const missingTags = props.registeredTags.filter((tag) => !presentTagIds.has(tag.component));
   const [busyTag, setBusyTag] = useState<string>();
   const [message, setMessage] = useState<string>();
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [tagQuery, setTagQuery] = useState("");
+  const normalizedTagQuery = tagQuery.trim().toLowerCase();
+  const filteredMissingTags =
+    normalizedTagQuery.length === 0
+      ? missingTags
+      : missingTags.filter((tag) =>
+          `${tag.name} ${tag.component}`.toLowerCase().includes(normalizedTagQuery)
+        );
+
+  useEffect(() => {
+    if (missingTags.length === 0) {
+      setAddMenuOpen(false);
+      setTagQuery("");
+    }
+  }, [missingTags.length]);
 
   async function apply(action: "add" | "remove", component: string) {
     if (!props.client) {
@@ -537,6 +560,8 @@ function TagControls(props: {
     try {
       if (action === "add") {
         await addTag(props.client, props.entityId, component);
+        setAddMenuOpen(false);
+        setTagQuery("");
       } else {
         await removeComponent(props.client, props.entityId, component);
       }
@@ -553,7 +578,61 @@ function TagControls(props: {
       <h3>Tags</h3>
       <div className="tag-groups">
         <div>
-          <h4>On Entity</h4>
+          <div className="tag-group-heading">
+            <h4>On Entity</h4>
+            <div className="tag-add">
+              <button
+                className="icon-only"
+                type="button"
+                onClick={() => setAddMenuOpen((open) => !open)}
+                disabled={missingTags.length === 0 || !props.client}
+                title={missingTags.length === 0 ? "All registered tags are present" : "Add tag"}
+                aria-label="Add tag"
+                aria-expanded={addMenuOpen}
+              >
+                <Plus size={15} />
+              </button>
+              {addMenuOpen && (
+                <div className="tag-menu">
+                  <label className="tag-menu-search">
+                    <Search size={14} />
+                    <input
+                      autoFocus
+                      aria-label="Search tags"
+                      value={tagQuery}
+                      onChange={(event) => setTagQuery(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          setAddMenuOpen(false);
+                        }
+                      }}
+                      placeholder="Search tags"
+                    />
+                  </label>
+                  <div className="tag-menu-list">
+                    {filteredMissingTags.map((tag) => (
+                      <button
+                        className="tag-menu-item"
+                        key={tag.component}
+                        onClick={() => void apply("add", tag.component)}
+                        disabled={busyTag === tag.component || !props.client}
+                        title={tag.component}
+                      >
+                        <Tag size={13} />
+                        <span>{tag.name || tag.component}</span>
+                        {tag.name && <code>{tag.component}</code>}
+                      </button>
+                    ))}
+                    {filteredMissingTags.length === 0 && (
+                      <EmptyInline
+                        text={missingTags.length === 0 ? "All registered tags are present." : "No matching tags."}
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
           <div className="pill-row">
             {presentTags.map((tag) => (
               <button
@@ -568,24 +647,6 @@ function TagControls(props: {
               </button>
             ))}
             {presentTags.length === 0 && <EmptyInline text="No tags on this entity." />}
-          </div>
-        </div>
-        <div>
-          <h4>Add Tag</h4>
-          <div className="pill-row">
-            {missingTags.map((tag) => (
-              <button
-                className="pill action-pill"
-                key={tag.component}
-                onClick={() => void apply("add", tag.component)}
-                disabled={busyTag === tag.component || !props.client}
-                title="Add tag"
-              >
-                <Plus size={12} />
-                {tag.name || tag.component}
-              </button>
-            ))}
-            {missingTags.length === 0 && <EmptyInline text="All registered tags are present." />}
           </div>
         </div>
       </div>
@@ -747,10 +808,14 @@ function JobDetailView(props: {
         <span>{props.job.singleThread ? "Single thread" : `${props.job.maxThreads} threads`}</span>
         <span>Min chunk {props.job.minEntitiesPerThread}</span>
       </div>
-      <h3>Reads</h3>
-      <ComponentPills components={props.job.reads} onSelectSingleton={props.onSelectSingleton} />
-      <h3>Writes</h3>
-      <ComponentPills components={props.job.writes} onSelectSingleton={props.onSelectSingleton} />
+      <ComponentPillSection title="Reads" components={props.job.reads} onSelectSingleton={props.onSelectSingleton} />
+      <ComponentPillSection title="Writes" components={props.job.writes} onSelectSingleton={props.onSelectSingleton} />
+      <ComponentPillSection
+        title="Accesses"
+        components={props.job.accesses}
+        onSelectSingleton={props.onSelectSingleton}
+      />
+      <ComponentPillSection title="Without" components={props.job.without} onSelectSingleton={props.onSelectSingleton} />
       <h3>Matching Entities</h3>
       <div className="list compact">
         {props.job.matchingEntities.map((entity) => (
@@ -762,6 +827,22 @@ function JobDetailView(props: {
         {props.job.matchingEntities.length === 0 && <EmptyInline text="No matching entities." />}
       </div>
     </div>
+  );
+}
+
+function ComponentPillSection(props: {
+  title: string;
+  components: Array<ComponentRef | string>;
+  onSelectSingleton?: (componentId: string) => void;
+}) {
+  if (props.components.length === 0) {
+    return null;
+  }
+  return (
+    <>
+      <h3>{props.title}</h3>
+      <ComponentPills components={props.components} onSelectSingleton={props.onSelectSingleton} />
+    </>
   );
 }
 
@@ -827,7 +908,9 @@ function matchesJob(job: JobSummary, query: string): boolean {
     job.name,
     String(job.order),
     ...job.reads.flatMap((component) => [componentRefId(component), componentRefName(component)]),
-    ...job.writes.flatMap((component) => [componentRefId(component), componentRefName(component)])
+    ...job.writes.flatMap((component) => [componentRefId(component), componentRefName(component)]),
+    ...job.accesses.flatMap((component) => [componentRefId(component), componentRefName(component)]),
+    ...job.without.flatMap((component) => [componentRefId(component), componentRefName(component)])
   ].some((value) =>
     value.toLowerCase().includes(normalized)
   );

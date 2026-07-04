@@ -316,18 +316,32 @@ std::optional<JobInfo> Registry::job_info(Entity job) const {
     info.single_thread = record.single_thread;
     info.max_threads = record.max_threads;
     info.min_entities_per_thread = record.min_entities_per_thread;
-    info.reads.reserve(record.reads.size());
-    for (std::uint32_t component : record.reads) {
+    info.reads.reserve(record.debug_reads.size());
+    for (std::uint32_t component : record.debug_reads) {
         const auto component_record = component_catalog_.records.find(component);
         if (component_record != component_catalog_.records.end()) {
             info.reads.push_back(component_record->second.entity);
         }
     }
-    info.writes.reserve(record.writes.size());
-    for (std::uint32_t component : record.writes) {
+    info.writes.reserve(record.debug_writes.size());
+    for (std::uint32_t component : record.debug_writes) {
         const auto component_record = component_catalog_.records.find(component);
         if (component_record != component_catalog_.records.end()) {
             info.writes.push_back(component_record->second.entity);
+        }
+    }
+    info.accesses.reserve(record.debug_accesses.size());
+    for (std::uint32_t component : record.debug_accesses) {
+        const auto component_record = component_catalog_.records.find(component);
+        if (component_record != component_catalog_.records.end()) {
+            info.accesses.push_back(component_record->second.entity);
+        }
+    }
+    info.without.reserve(record.debug_without.size());
+    for (std::uint32_t component : record.debug_without) {
+        const auto component_record = component_catalog_.records.find(component);
+        if (component_record != component_catalog_.records.end()) {
+            info.without.push_back(component_record->second.entity);
         }
     }
     return info;
@@ -840,6 +854,10 @@ void Registry::canonicalize_components(std::vector<std::uint32_t>& components) {
 void Registry::canonicalize_job_metadata(JobAccessMetadata& metadata) {
     canonicalize_components(metadata.reads);
     canonicalize_components(metadata.writes);
+    canonicalize_components(metadata.accesses);
+    canonicalize_components(metadata.without);
+    canonicalize_components(metadata.dependency_reads);
+    canonicalize_components(metadata.dependency_writes);
     std::vector<std::uint32_t> reads;
     reads.reserve(metadata.reads.size());
     std::set_difference(
@@ -849,6 +867,16 @@ void Registry::canonicalize_job_metadata(JobAccessMetadata& metadata) {
         metadata.writes.end(),
         std::back_inserter(reads));
     metadata.reads = std::move(reads);
+
+    std::vector<std::uint32_t> dependency_reads;
+    dependency_reads.reserve(metadata.dependency_reads.size());
+    std::set_difference(
+        metadata.dependency_reads.begin(),
+        metadata.dependency_reads.end(),
+        metadata.dependency_writes.begin(),
+        metadata.dependency_writes.end(),
+        std::back_inserter(dependency_reads));
+    metadata.dependency_reads = std::move(dependency_reads);
 }
 
 void Registry::append_unique_component(std::vector<std::uint32_t>& components, std::uint32_t component) {
@@ -868,7 +896,7 @@ Entity Registry::add_job(
     JobThreadingOptions threading,
     bool structural) {
     canonicalize_job_metadata(metadata);
-    for (std::uint32_t component : metadata.writes) {
+    for (std::uint32_t component : metadata.dependency_writes) {
         const auto found = component_catalog_.records.find(component);
         if (found != component_catalog_.records.end() && found->second.singleton) {
             threading.single_thread = true;
@@ -889,8 +917,12 @@ Entity Registry::add_job(
         std::move(name),
         order,
         job_registry_.next_sequence++,
+        std::move(metadata.dependency_reads),
+        std::move(metadata.dependency_writes),
         std::move(metadata.reads),
         std::move(metadata.writes),
+        std::move(metadata.accesses),
+        std::move(metadata.without),
         std::move(run),
         std::move(collect_indices),
         std::move(run_range),
