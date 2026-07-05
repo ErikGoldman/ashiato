@@ -1,7 +1,21 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-07-04T18:25:46.588053+00:00",
+  "generated_at": "2026-07-05T03:48:55.382033+00:00",
   "runs": [
+    {
+      "run_slug": "20260705T034807Z-181b8bedb970",
+      "title": "20260705T034807Z-181b8bedb970",
+      "commit": "181b8bedb970f887efdeacb4562945894d636f4a",
+      "short_commit": "181b8bedb970",
+      "ref": "main",
+      "run_id": "28728607085",
+      "run_attempt": "1",
+      "started_at": "2026-07-05T03:48:07.623592+00:00",
+      "finished_at": "2026-07-05T03:48:14.547223+00:00",
+      "subset": "characteristic",
+      "benchmark_filter": "^(BM_IterateEightComponents/16384|BM_IterateEightComponentsOwnedGroupView/16384|BM_IterateSparseTwoComponentView/16384/10|BM_IterateWriteOwnedGroupViewEightComponents/16384|BM_AccessViewReadWrite/16384|BM_AddRemoveComponents/16384|BM_GroupMaintenanceAddRemove/16384|BM_Snapshot/16384|BM_DeltaSnapshotDirtyValues/16384|BM_DeltaSnapshotStructuralChanges/16384|BM_DeltaSnapshotRestoreStructuralChanges/16384|BM_RuntimeEnsureExistingWriteRead/16384|BM_JobScheduleReadOnly/256|BM_RunJobsSingleThread/16384|BM_RunJobsParallelThreadPool/16384|BM_RunJobsParallelOverlappingWritesThreadPool/16384)$",
+      "result_path": "20260705T034807Z-181b8bedb970/result.json"
+    },
     {
       "run_slug": "20260704T182453Z-a5779512ab35",
       "title": "20260704T182453Z-a5779512ab35",
