@@ -437,6 +437,23 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+Build the native Dear ImGui debugger:
+
+```bash
+cmake -S . -B build-debugger \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DASHIATO_BUILD_EXAMPLE=OFF \
+  -DASHIATO_ENABLE_DEBUG_SERVER=ON \
+  -DASHIATO_BUILD_DEBUGGER=ON
+cmake --build build-debugger --target ashiato_debugger
+```
+
+Run `build-debugger/tools/debugger/ashiato_debugger` and point it at the
+debug server base port, normally `8080`. The debugger scans that port and the
+next 15 localhost ports, keeps current selections and edit buffers across
+manual or automatic refreshes, and talks to the existing debug server through
+the local GraphQL HTTP endpoint.
+
 Generate coverage stats with GCC or Clang:
 
 ```bash

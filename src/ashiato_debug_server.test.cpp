@@ -172,6 +172,8 @@ TEST_CASE("debug server responds to a loopback GraphQL request") {
     registry.write<GameTime>().tick = 42;
     const ashiato::Entity entity = registry.create();
     REQUIRE(registry.add<Position>(entity, Position{5, 6}) != nullptr);
+    const ashiato::Entity move_job = registry.job<const Position>(3).name("Move debug").each(
+        [](ashiato::Entity, const Position&) {});
 
     ashiato::DebugServer server(registry, "client 1", ashiato::DebugServerOptions{true});
     INFO(server.last_error());
@@ -202,6 +204,8 @@ TEST_CASE("debug server responds to a loopback GraphQL request") {
         post_graphql(server, "{\"query\":\"query { entities { id index version kind displayName } }\"}");
     REQUIRE(duplicated_entities_response.find("\"displayName\":\"ball 1\"") != std::string::npos);
     REQUIRE(duplicated_entities_response.find("\"displayName\":\"ball 2\"") != std::string::npos);
+    REQUIRE(duplicated_entities_response.find("\"displayName\":\"Position\"") != std::string::npos);
+    REQUIRE(duplicated_entities_response.find("\"displayName\":\"Move debug\"") != std::string::npos);
 
     const ashiato::Entity debug_name_component = registry.component<ashiato::DebugName>();
     const std::string rename_body =

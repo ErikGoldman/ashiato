@@ -22,6 +22,7 @@ endif()
 option(ASHIATO_BUILD_EXAMPLE "Build the example executable" ${ashiato_is_top_level})
 option(ASHIATO_BUILD_TESTING "Build Ashiato ECS tests" ${ashiato_build_testing_default})
 option(ASHIATO_BUILD_BENCHMARKS "Build Google Benchmark suites" OFF)
+option(ASHIATO_BUILD_DEBUGGER "Build the Dear ImGui Ashiato ECS debugger" OFF)
 option(ASHIATO_BUILD_STATIC_LIBRARY_ONLY "Build only the Ashiato ECS static library target" OFF)
 option(ASHIATO_ENABLE_COVERAGE "Build Ashiato ECS targets with coverage instrumentation" OFF)
 option(ASHIATO_ENABLE_DEBUG_SERVER "Build the optional Ashiato ECS local debug GraphQL server" OFF)
@@ -66,6 +67,7 @@ if(ASHIATO_BUILD_STATIC_LIBRARY_ONLY)
     set(ASHIATO_BUILD_EXAMPLE OFF CACHE BOOL "Build the example executable" FORCE)
     set(ASHIATO_BUILD_TESTING OFF CACHE BOOL "Build Ashiato ECS tests" FORCE)
     set(ASHIATO_BUILD_BENCHMARKS OFF CACHE BOOL "Build Google Benchmark suites" FORCE)
+    set(ASHIATO_BUILD_DEBUGGER OFF CACHE BOOL "Build the Dear ImGui Ashiato ECS debugger" FORCE)
 endif()
 
 if(ASHIATO_ENABLE_COVERAGE AND NOT ASHIATO_BUILD_TESTING)
@@ -218,7 +220,7 @@ if(ASHIATO_BUILD_EXAMPLE)
     add_subdirectory(examples)
 endif()
 
-if(ASHIATO_BUILD_TESTING OR ASHIATO_BUILD_BENCHMARKS)
+if(ASHIATO_BUILD_TESTING OR ASHIATO_BUILD_BENCHMARKS OR ASHIATO_BUILD_DEBUGGER)
     include(FetchContent)
 endif()
 
@@ -269,6 +271,41 @@ if(ASHIATO_BUILD_TESTING)
     add_custom_target(tests DEPENDS ashiato_tests)
 
     catch_discover_tests(ashiato_tests)
+endif()
+
+if(ASHIATO_BUILD_DEBUGGER)
+    if(NOT ASHIATO_ENABLE_DEBUG_SERVER)
+        message(FATAL_ERROR "ASHIATO_BUILD_DEBUGGER requires ASHIATO_ENABLE_DEBUG_SERVER=ON")
+    endif()
+
+    set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+
+    FetchContent_Declare(
+        glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG 3.4
+    )
+    FetchContent_MakeAvailable(glfw)
+
+    FetchContent_Declare(
+        imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG v1.91.9b
+    )
+    FetchContent_MakeAvailable(imgui)
+
+    FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+
+    add_subdirectory(tools/debugger)
 endif()
 
 if(ASHIATO_BUILD_BENCHMARKS)

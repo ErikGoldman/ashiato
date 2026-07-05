@@ -1119,10 +1119,30 @@ private:
 
     std::string debug_name(Entity entity) const {
         if (!debug_name_component_) {
-            return {};
+            return internal_entity_debug_name(entity);
         }
         const auto* name = static_cast<const DebugName*>(registry_.get(entity, debug_name_component_));
-        return name != nullptr ? name->str() : std::string{};
+        if (name != nullptr) {
+            const std::string explicit_name = name->str();
+            if (!explicit_name.empty()) {
+                return explicit_name;
+            }
+        }
+        return internal_entity_debug_name(entity);
+    }
+
+    std::string internal_entity_debug_name(Entity entity) const {
+        switch (registry_.entity_kind(entity)) {
+        case EntityKind::Component:
+            return registry_.component_name(entity);
+        case EntityKind::Job:
+            if (const std::optional<JobInfo> info = registry_.job_info(entity)) {
+                return info->name;
+            }
+            return {};
+        default:
+            return {};
+        }
     }
 
     std::map<std::uint64_t, std::string> entity_display_names() {
