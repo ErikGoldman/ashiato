@@ -319,6 +319,148 @@ TEST_CASE("trivial components can be added, read, written, replaced, and removed
     REQUIRE_FALSE(registry.remove<Position>(entity));
 }
 
+TEST_CASE("component lifecycle hooks fire for add and remove only") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+    const ashiato::Entity entity = registry.create();
+
+    int added_count = 0;
+    int removed_count = 0;
+    auto add_subscription = registry.on_component_add<Position>(
+        [&](ashiato::Registry& hooked_registry, ashiato::Entity hooked_entity) {
+            REQUIRE(hooked_entity == entity);
+            REQUIRE(hooked_registry.contains<Position>(hooked_entity));
+            REQUIRE(hooked_registry.get<Position>(hooked_entity).x == 1);
+            REQUIRE(hooked_registry.view<Position>().matching_indices().size() == 1);
+            ++added_count;
+        });
+    auto remove_subscription = registry.on_component_remove<Position>(
+        [&](ashiato::Registry& hooked_registry, ashiato::Entity hooked_entity) {
+            REQUIRE(hooked_entity == entity);
+            REQUIRE(hooked_registry.contains<Position>(hooked_entity));
+            REQUIRE(hooked_registry.get<Position>(hooked_entity).x == 7);
+            ++removed_count;
+        });
+    REQUIRE(add_subscription.active());
+    REQUIRE(remove_subscription.active());
+
+    REQUIRE(registry.add<Position>(entity, Position{1, 2}) != nullptr);
+    REQUIRE(added_count == 1);
+
+    REQUIRE(registry.add<Position>(entity, Position{7, 8}) != nullptr);
+    REQUIRE(added_count == 1);
+
+    registry.write<Position>(entity).x = 9;
+    REQUIRE(added_count == 1);
+    REQUIRE(removed_count == 0);
+
+    registry.write<Position>(entity).x = 7;
+    REQUIRE(registry.remove<Position>(entity));
+    REQUIRE(removed_count == 1);
+    REQUIRE_FALSE(registry.remove<Position>(entity));
+    REQUIRE(removed_count == 1);
+
+    add_subscription.reset();
+    REQUIRE(registry.add<Position>(entity, Position{1, 2}) != nullptr);
+    REQUIRE(added_count == 1);
+}
+
+TEST_CASE("tag lifecycle hooks mirror component add and remove") {
+    ashiato::Registry registry;
+    registry.register_component<Active>("Active");
+    const ashiato::Entity entity = registry.create();
+
+    int added_count = 0;
+    int removed_count = 0;
+    auto add_subscription = registry.on_component_add<Active>(
+        [&](ashiato::Registry& hooked_registry, ashiato::Entity hooked_entity) {
+            REQUIRE(hooked_entity == entity);
+            REQUIRE(hooked_registry.has<Active>(hooked_entity));
+            ++added_count;
+        });
+    auto remove_subscription = registry.on_component_remove<Active>(
+        [&](ashiato::Registry& hooked_registry, ashiato::Entity hooked_entity) {
+            REQUIRE(hooked_entity == entity);
+            REQUIRE(hooked_registry.has<Active>(hooked_entity));
+            ++removed_count;
+        });
+    REQUIRE(add_subscription.active());
+    REQUIRE(remove_subscription.active());
+
+    REQUIRE(registry.add<Active>(entity));
+    REQUIRE(added_count == 1);
+    REQUIRE(registry.add<Active>(entity));
+    REQUIRE(added_count == 1);
+
+    REQUIRE(registry.remove<Active>(entity));
+    REQUIRE(removed_count == 1);
+    REQUIRE_FALSE(registry.remove<Active>(entity));
+    REQUIRE(removed_count == 1);
+}
+
+TEST_CASE("ensure and destroy participate in add and remove lifecycle hooks") {
+    ashiato::Registry registry;
+    const ashiato::Entity position_component = registry.register_component<Position>("Position");
+    registry.register_component<Active>("Active");
+    const ashiato::Entity entity = registry.create();
+
+    int added_count = 0;
+    int removed_position_count = 0;
+    int removed_tag_count = 0;
+    auto add_subscription = registry.on_component_add<Position>(
+        [&](ashiato::Registry& hooked_registry, ashiato::Entity hooked_entity) {
+            REQUIRE(hooked_entity == entity);
+            REQUIRE(hooked_registry.contains<Position>(hooked_entity));
+            ++added_count;
+        });
+    auto remove_position_subscription = registry.on_component_remove<Position>(
+        [&](ashiato::Registry& hooked_registry, ashiato::Entity hooked_entity) {
+            REQUIRE(hooked_entity == entity);
+            REQUIRE(hooked_registry.contains<Position>(hooked_entity));
+            ++removed_position_count;
+        });
+    auto remove_tag_subscription = registry.on_component_remove<Active>(
+        [&](ashiato::Registry& hooked_registry, ashiato::Entity hooked_entity) {
+            REQUIRE(hooked_entity == entity);
+            REQUIRE(hooked_registry.has<Active>(hooked_entity));
+            ++removed_tag_count;
+        });
+    REQUIRE(add_subscription.active());
+    REQUIRE(remove_position_subscription.active());
+    REQUIRE(remove_tag_subscription.active());
+
+    REQUIRE(registry.ensure(entity, position_component) != nullptr);
+    REQUIRE(added_count == 1);
+    REQUIRE(registry.ensure(entity, position_component) != nullptr);
+    REQUIRE(added_count == 1);
+
+    REQUIRE(registry.add<Active>(entity));
+    REQUIRE(registry.destroy(entity));
+    REQUIRE(removed_position_count == 1);
+    REQUIRE(removed_tag_count == 1);
+}
+
+TEST_CASE("destroying a component entity removes its lifecycle hooks") {
+    ashiato::Registry registry;
+    const ashiato::Entity runtime_tag = registry.register_tag("RuntimeTag");
+    const ashiato::Entity entity = registry.create();
+
+    int added_count = 0;
+    auto add_subscription = registry.on_component_add(
+        runtime_tag,
+        [&](ashiato::Registry&, ashiato::Entity) {
+            ++added_count;
+        });
+    REQUIRE(add_subscription.active());
+
+    REQUIRE(registry.destroy(runtime_tag));
+    const ashiato::Entity replacement_tag = registry.register_tag("ReplacementTag");
+    REQUIRE(ashiato::Registry::entity_index(replacement_tag) == ashiato::Registry::entity_index(runtime_tag));
+
+    REQUIRE(registry.add_tag(entity, replacement_tag));
+    REQUIRE(added_count == 0);
+}
+
 TEST_CASE("singleton components are created at registration and expose no-entity access") {
     static_assert(HasSingletonGet<ashiato::Registry, GameTime>::value, "singleton components can be read without entity");
     static_assert(HasSingletonWrite<ashiato::Registry, GameTime>::value, "singleton components can be written without entity");

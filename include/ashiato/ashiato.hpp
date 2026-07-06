@@ -718,6 +718,30 @@ public:
         bool entity_destroyed = false;
     };
 
+    using ComponentLifecycleHook = std::function<void(Registry&, Entity)>;
+
+    class ComponentLifecycleHookSubscription {
+    public:
+        ComponentLifecycleHookSubscription() = default;
+        ComponentLifecycleHookSubscription(const ComponentLifecycleHookSubscription&) = delete;
+        ComponentLifecycleHookSubscription& operator=(const ComponentLifecycleHookSubscription&) = delete;
+        ComponentLifecycleHookSubscription(ComponentLifecycleHookSubscription&& other) noexcept;
+        ComponentLifecycleHookSubscription& operator=(ComponentLifecycleHookSubscription&& other) noexcept;
+        ~ComponentLifecycleHookSubscription();
+
+        void reset();
+        bool active() const noexcept {
+            return active_;
+        }
+
+    private:
+        friend class Registry;
+        explicit ComponentLifecycleHookSubscription(std::function<void()> unsubscribe);
+
+        std::function<void()> unsubscribe_;
+        bool active_ = false;
+    };
+
     template <typename... Components>
     class View;
 
@@ -751,7 +775,7 @@ public:
         typename StructuralList>
     class JobTagFilteredStructuralView;
 
-    template <typename ViewType, typename... StructuralComponents>
+    template <bool DispatchHooks, typename ViewType, typename... StructuralComponents>
     class JobStructuralContext;
 
     class Snapshot;
@@ -793,11 +817,21 @@ public:
         }
 
         const std::uint32_t index = entity_index(entity);
-        for (auto& storage : storage_registry_.storages) {
+        std::vector<std::uint32_t> components_to_remove;
+        for (const auto& storage : storage_registry_.storages) {
             if (storage.second->contains_index(index)) {
-                remove_from_groups_before_component_removal(index, storage.first);
-                storage.second->remove_for_destroy(entity);
+                components_to_remove.push_back(storage.first);
             }
+        }
+
+        for (std::uint32_t component_index : components_to_remove) {
+            auto found = storage_registry_.storages.find(component_index);
+            if (found == storage_registry_.storages.end() || !found->second->contains_index(index)) {
+                continue;
+            }
+            dispatch_component_remove_hooks(Entity{entity_store_.slots[component_index]}, entity);
+            remove_from_groups_before_component_removal(index, component_index);
+            found->second->remove_for_destroy(entity);
         }
 
         unregister_component_entity(entity);
@@ -956,23 +990,14 @@ public:
         typename... Args>
     T* add(Entity entity, Args&&... args) {
         require_runtime_registry_access_allowed("add");
-        const Entity component = registered_component<T>();
-        if (!alive(entity)) {
-            return nullptr;
-        }
-
-        T* value = storage_for(component).emplace_or_replace<T>(
-            entity,
-            std::forward<Args>(args)...);
-        refresh_group_after_add(entity_index(entity), entity_index(component));
-        return value;
+        return add_component<true, T>(entity, std::forward<Args>(args)...);
     }
 
     template <typename T, typename std::enable_if<detail::is_tag_query<T>::value, int>::type = 0>
     bool add(Entity entity) {
         require_runtime_registry_access_allowed("add");
         const Entity component = registered_component<T>();
-        return add_tag(entity, component);
+        return add_tag_impl<true>(entity, component);
     }
 
     bool add_tag(Entity entity, Entity tag);
@@ -980,20 +1005,7 @@ public:
     void* add(Entity entity, Entity component, const void* value = nullptr);
     void* ensure(Entity entity, Entity component) {
         require_runtime_registry_access_allowed("ensure");
-        const ComponentRecord& record = require_component_record(component);
-        if (record.info.tag) {
-            throw std::logic_error("ashiato tags cannot be ensured as writable components");
-        }
-        if (record.singleton) {
-            return storage_for(component).ensure(singleton_entity());
-        }
-        if (!alive(entity)) {
-            return nullptr;
-        }
-
-        void* ensured = storage_for(component).ensure(entity);
-        refresh_group_after_add(entity_index(entity), entity_index(component));
-        return ensured;
+        return ensure_component<true>(entity, component);
     }
 
     template <typename T, typename std::enable_if<!is_singleton_component<T>::value, int>::type = 0>
@@ -1005,25 +1017,26 @@ public:
 
     bool remove(Entity entity, Entity component) {
         require_runtime_registry_access_allowed("remove");
-        const ComponentRecord& record = require_component_record(component);
-        if (record.singleton) {
-            return false;
-        }
-        if (!alive(entity)) {
-            return false;
-        }
-
-        if (auto* found = find_storage(component)) {
-            const std::uint32_t index = entity_index(entity);
-            if (!found->contains_index(index)) {
-                return false;
-            }
-            remove_from_groups_before_component_removal(index, entity_index(component));
-            return found->remove(entity);
-        }
-
-        return false;
+        return remove_component<true>(entity, component);
     }
+
+    template <typename T>
+    ComponentLifecycleHookSubscription on_component_add(ComponentLifecycleHook callback) {
+        require_runtime_registry_access_allowed("on_component_add");
+        const Entity component = registered_component<detail::component_query_t<T>>();
+        return on_component_add(component, std::move(callback));
+    }
+
+    ComponentLifecycleHookSubscription on_component_add(Entity component, ComponentLifecycleHook callback);
+
+    template <typename T>
+    ComponentLifecycleHookSubscription on_component_remove(ComponentLifecycleHook callback) {
+        require_runtime_registry_access_allowed("on_component_remove");
+        const Entity component = registered_component<detail::component_query_t<T>>();
+        return on_component_remove(component, std::move(callback));
+    }
+
+    ComponentLifecycleHookSubscription on_component_remove(Entity component, ComponentLifecycleHook callback);
 
     template <
         typename T,
@@ -1742,6 +1755,38 @@ private:
         static constexpr unsigned char tombstone_destroy_entity = 2U;
     };
 
+    template <bool DispatchHooks, typename T, typename... Args>
+    T* add_component(Entity entity, Args&&... args) {
+        const Entity component = registered_component<T>();
+        if (!alive(entity)) {
+            return nullptr;
+        }
+
+        TypeErasedStorage& storage = storage_for(component);
+        const std::uint32_t index = entity_index(entity);
+        const bool created = !storage.contains_index(index);
+        T* value = storage.template emplace_or_replace<T>(entity, std::forward<Args>(args)...);
+        refresh_group_after_add(index, entity_index(component));
+        if constexpr (DispatchHooks) {
+            if (created) {
+                dispatch_component_add_hooks(component, entity);
+            }
+        }
+        return value;
+    }
+
+    template <bool DispatchHooks>
+    bool add_tag_impl(Entity entity, Entity tag);
+
+    template <bool DispatchHooks>
+    void* add_component_bytes(Entity entity, Entity component, const void* value);
+
+    template <bool DispatchHooks>
+    void* ensure_component(Entity entity, Entity component);
+
+    template <bool DispatchHooks>
+    bool remove_component(Entity entity, Entity component);
+
     struct GroupRecord {
         std::vector<std::uint32_t> owned;
         std::size_t size = 0;
@@ -1927,6 +1972,14 @@ private:
     void append_job_structural_metadata(JobAccessMetadata& metadata) const {
         (append_job_structural_component<Components>(metadata), ...);
         canonicalize_job_metadata(metadata);
+    }
+
+    template <typename... Components>
+    std::vector<std::uint32_t> make_job_structural_components() const {
+        std::vector<std::uint32_t> components{
+            entity_index(registered_component<detail::component_query_t<Components>>())...};
+        canonicalize_components(components);
+        return components;
     }
 
     struct JobThreadingOptions {
@@ -2280,6 +2333,39 @@ private:
         std::uint64_t view_topology_token = 1;
     };
 
+    struct ComponentLifecycleHookEntry {
+        std::uint64_t id = 0;
+        ComponentLifecycleHook callback;
+    };
+
+    struct ComponentLifecycleHookList {
+        std::vector<ComponentLifecycleHookEntry> add;
+        std::vector<ComponentLifecycleHookEntry> remove;
+    };
+
+    struct ComponentLifecycleHookRegistry {
+        std::unordered_map<std::uint32_t, ComponentLifecycleHookList> hooks;
+        std::uint64_t next_id = 1;
+        std::uint64_t revision = 1;
+    };
+
+    struct ComponentLifecycleHookMatchCache {
+        std::uint64_t revision = 0;
+        bool matches = false;
+    };
+
+    ComponentLifecycleHookSubscription subscribe_component_lifecycle_hook(
+        Entity component,
+        bool add_hook,
+        ComponentLifecycleHook callback);
+    void unsubscribe_component_lifecycle_hook(std::uint32_t component, bool add_hook, std::uint64_t id);
+    bool has_component_lifecycle_hooks(std::uint32_t component) const;
+    bool component_lifecycle_hooks_match(
+        const std::vector<std::uint32_t>& components,
+        ComponentLifecycleHookMatchCache& cache) const;
+    void dispatch_component_add_hooks(Entity component, Entity entity);
+    void dispatch_component_remove_hooks(Entity component, Entity entity);
+
     struct GroupIndex {
         std::vector<std::unique_ptr<GroupRecord>> groups;
         std::unordered_map<std::uint32_t, GroupRecord*> owned_component_groups;
@@ -2301,6 +2387,8 @@ private:
     EntityStore entity_store_;
     ComponentCatalog component_catalog_;
     StorageRegistry storage_registry_;
+    std::shared_ptr<ComponentLifecycleHookRegistry> component_lifecycle_hooks_ =
+        std::make_shared<ComponentLifecycleHookRegistry>();
     GroupIndex group_index_;
     JobRegistry job_registry_;
     std::uint64_t state_token_ = next_state_token();
@@ -4480,7 +4568,7 @@ Registry::View<>::without_tags(std::initializer_list<Entity> tags) const {
     return view;
 }
 
-template <typename ViewType, typename... StructuralComponents>
+template <bool DispatchHooks, typename ViewType, typename... StructuralComponents>
 class Registry::JobStructuralContext {
 public:
     JobStructuralContext(Registry& registry, ViewType& view)
@@ -4567,7 +4655,9 @@ public:
 #if ASHIATO_RUNTIME_REGISTRY_ACCESS_CHECKING
         detail::RegistryAccessAllowedScope scope;
 #endif
-        return registry_->template add<detail::component_query_t<T>>(entity, std::forward<Args>(args)...);
+        return registry_->template add_component<DispatchHooks, detail::component_query_t<T>>(
+            entity,
+            std::forward<Args>(args)...);
     }
 
     template <
@@ -4579,7 +4669,8 @@ public:
 #if ASHIATO_RUNTIME_REGISTRY_ACCESS_CHECKING
         detail::RegistryAccessAllowedScope scope;
 #endif
-        return registry_->template add<detail::component_query_t<T>>(entity);
+        const Entity component = registry_->template registered_component<detail::component_query_t<T>>();
+        return registry_->template add_tag_impl<DispatchHooks>(entity, component);
     }
 
     template <
@@ -4589,7 +4680,8 @@ public:
 #if ASHIATO_RUNTIME_REGISTRY_ACCESS_CHECKING
         detail::RegistryAccessAllowedScope scope;
 #endif
-        return registry_->template remove<detail::component_query_t<T>>(entity);
+        const Entity component = registry_->template registered_component<detail::component_query_t<T>>();
+        return registry_->template remove_component<DispatchHooks>(entity, component);
     }
 
 private:
@@ -4872,36 +4964,62 @@ public:
         registry_->template append_job_with_filter_metadata<WithTags...>(metadata);
         registry_->template append_job_without_filter_metadata<WithoutTags...>(metadata);
         registry_->template append_job_structural_metadata<StructuralComponents...>(metadata);
+        auto hook_cache = std::make_shared<ComponentLifecycleHookMatchCache>();
+        std::vector<std::uint32_t> structural_components =
+            registry_->template make_job_structural_components<StructuralComponents...>();
         threading_.single_thread = true;
         threading_.max_threads = 1;
         return registry_->add_job(
             order_,
             name_,
             std::move(metadata),
-            [callback](Registry& registry) mutable {
+            [callback, hook_cache, structural_components](Registry& registry) mutable {
                 auto view = make_view(registry);
-                auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                    using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                    using Context = JobStructuralContext<ActiveView, StructuralComponents...>;
-                    Context context(registry, active_view);
-                    detail::invoke_job_context_callback(*callback, context, entity, components...);
-                };
-                view.each(adapter);
+                if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
+                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
+                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
+                        using Context = JobStructuralContext<true, ActiveView, StructuralComponents...>;
+                        Context context(registry, active_view);
+                        detail::invoke_job_context_callback(*callback, context, entity, components...);
+                    };
+                    view.each(adapter);
+                } else {
+                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
+                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
+                        using Context = JobStructuralContext<false, ActiveView, StructuralComponents...>;
+                        Context context(registry, active_view);
+                        detail::invoke_job_context_callback(*callback, context, entity, components...);
+                    };
+                    view.each(adapter);
+                }
             },
             [](Registry& registry) {
                 auto view = make_view(registry);
                 return view.matching_indices();
             },
-            [callback](Registry& registry, const std::vector<std::uint32_t>& indices, std::size_t begin, std::size_t end)
-                mutable {
+            [callback, hook_cache, structural_components](
+                Registry& registry,
+                const std::vector<std::uint32_t>& indices,
+                std::size_t begin,
+                std::size_t end) mutable {
                     auto view = make_view(registry);
-                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                        using Context = JobStructuralContext<ActiveView, StructuralComponents...>;
-                        Context context(registry, active_view);
-                        detail::invoke_job_context_callback(*callback, context, entity, components...);
-                    };
-                    view.each_index_range(adapter, indices, begin, end);
+                    if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
+                        auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
+                            using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
+                            using Context = JobStructuralContext<true, ActiveView, StructuralComponents...>;
+                            Context context(registry, active_view);
+                            detail::invoke_job_context_callback(*callback, context, entity, components...);
+                        };
+                        view.each_index_range(adapter, indices, begin, end);
+                    } else {
+                        auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
+                            using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
+                            using Context = JobStructuralContext<false, ActiveView, StructuralComponents...>;
+                            Context context(registry, active_view);
+                            detail::invoke_job_context_callback(*callback, context, entity, components...);
+                        };
+                        view.each_index_range(adapter, indices, begin, end);
+                    }
                 },
             registry_->template make_job_range_dirty_writes<IterComponents...>(),
             threading_,
@@ -5353,35 +5471,61 @@ public:
         auto callback = std::make_shared<Callback>(std::forward<Fn>(fn));
         JobAccessMetadata metadata = registry_->template make_job_access_metadata<IterComponents...>();
         registry_->template append_job_structural_metadata<StructuralComponents...>(metadata);
+        auto hook_cache = std::make_shared<ComponentLifecycleHookMatchCache>();
+        std::vector<std::uint32_t> structural_components =
+            registry_->template make_job_structural_components<StructuralComponents...>();
         threading_.single_thread = true;
         threading_.max_threads = 1;
         return registry_->add_job(
             order_,
             name_,
             std::move(metadata),
-            [callback](Registry& registry) mutable {
+            [callback, hook_cache, structural_components](Registry& registry) mutable {
                 auto view = registry.template view<IterComponents...>();
-                auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                    using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                    using Context = JobStructuralContext<ActiveView, StructuralComponents...>;
-                    Context context(registry, active_view);
-                    detail::invoke_job_context_callback(*callback, context, entity, components...);
-                };
-                view.each(adapter);
+                if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
+                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
+                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
+                        using Context = JobStructuralContext<true, ActiveView, StructuralComponents...>;
+                        Context context(registry, active_view);
+                        detail::invoke_job_context_callback(*callback, context, entity, components...);
+                    };
+                    view.each(adapter);
+                } else {
+                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
+                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
+                        using Context = JobStructuralContext<false, ActiveView, StructuralComponents...>;
+                        Context context(registry, active_view);
+                        detail::invoke_job_context_callback(*callback, context, entity, components...);
+                    };
+                    view.each(adapter);
+                }
             },
             [](Registry& registry) {
                 return registry.template view<IterComponents...>().matching_indices();
             },
-            [callback](Registry& registry, const std::vector<std::uint32_t>& indices, std::size_t begin, std::size_t end)
-                mutable {
+            [callback, hook_cache, structural_components](
+                Registry& registry,
+                const std::vector<std::uint32_t>& indices,
+                std::size_t begin,
+                std::size_t end) mutable {
                     auto view = registry.template view<IterComponents...>();
-                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                        using Context = JobStructuralContext<ActiveView, StructuralComponents...>;
-                        Context context(registry, active_view);
-                        detail::invoke_job_context_callback(*callback, context, entity, components...);
-                    };
-                    view.each_index_range(adapter, indices, begin, end);
+                    if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
+                        auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
+                            using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
+                            using Context = JobStructuralContext<true, ActiveView, StructuralComponents...>;
+                            Context context(registry, active_view);
+                            detail::invoke_job_context_callback(*callback, context, entity, components...);
+                        };
+                        view.each_index_range(adapter, indices, begin, end);
+                    } else {
+                        auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
+                            using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
+                            using Context = JobStructuralContext<false, ActiveView, StructuralComponents...>;
+                            Context context(registry, active_view);
+                            detail::invoke_job_context_callback(*callback, context, entity, components...);
+                        };
+                        view.each_index_range(adapter, indices, begin, end);
+                    }
                 },
             registry_->template make_job_range_dirty_writes<IterComponents...>(),
             threading_,
@@ -5417,37 +5561,63 @@ public:
         JobAccessMetadata metadata = registry_->template make_job_access_metadata<IterComponents..., OptionalComponents...>();
         registry_->template append_job_external_access_metadata<AccessComponents...>(metadata);
         registry_->template append_job_structural_metadata<StructuralComponents...>(metadata);
+        auto hook_cache = std::make_shared<ComponentLifecycleHookMatchCache>();
+        std::vector<std::uint32_t> structural_components =
+            registry_->template make_job_structural_components<StructuralComponents...>();
         threading_.single_thread = true;
         threading_.max_threads = 1;
         return registry_->add_job(
             order_,
             name_,
             std::move(metadata),
-            [callback](Registry& registry) mutable {
+            [callback, hook_cache, structural_components](Registry& registry) mutable {
                 auto view = registry.template view<IterComponents...>().template access<AccessComponents...>();
-                auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                    using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                    using Context = JobStructuralContext<ActiveView, StructuralComponents...>;
-                    Context context(registry, active_view);
-                    detail::invoke_job_context_callback(*callback, context, entity, components...);
-                };
-                view.each(adapter);
+                if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
+                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
+                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
+                        using Context = JobStructuralContext<true, ActiveView, StructuralComponents...>;
+                        Context context(registry, active_view);
+                        detail::invoke_job_context_callback(*callback, context, entity, components...);
+                    };
+                    view.each(adapter);
+                } else {
+                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
+                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
+                        using Context = JobStructuralContext<false, ActiveView, StructuralComponents...>;
+                        Context context(registry, active_view);
+                        detail::invoke_job_context_callback(*callback, context, entity, components...);
+                    };
+                    view.each(adapter);
+                }
             },
             [](Registry& registry) {
                 return registry.template view<IterComponents...>()
                     .template access<AccessComponents...>()
                     .matching_indices();
             },
-            [callback](Registry& registry, const std::vector<std::uint32_t>& indices, std::size_t begin, std::size_t end)
-                mutable {
+            [callback, hook_cache, structural_components](
+                Registry& registry,
+                const std::vector<std::uint32_t>& indices,
+                std::size_t begin,
+                std::size_t end) mutable {
                     auto view = registry.template view<IterComponents...>().template access<AccessComponents...>();
-                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                        using Context = JobStructuralContext<ActiveView, StructuralComponents...>;
-                        Context context(registry, active_view);
-                        detail::invoke_job_context_callback(*callback, context, entity, components...);
-                    };
-                    view.each_index_range(adapter, indices, begin, end);
+                    if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
+                        auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
+                            using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
+                            using Context = JobStructuralContext<true, ActiveView, StructuralComponents...>;
+                            Context context(registry, active_view);
+                            detail::invoke_job_context_callback(*callback, context, entity, components...);
+                        };
+                        view.each_index_range(adapter, indices, begin, end);
+                    } else {
+                        auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
+                            using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
+                            using Context = JobStructuralContext<false, ActiveView, StructuralComponents...>;
+                            Context context(registry, active_view);
+                            detail::invoke_job_context_callback(*callback, context, entity, components...);
+                        };
+                        view.each_index_range(adapter, indices, begin, end);
+                    }
                 },
             registry_->template make_job_range_dirty_writes<IterComponents...>(),
             threading_,

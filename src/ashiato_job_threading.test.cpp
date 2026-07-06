@@ -361,6 +361,72 @@ TEST_CASE("structural jobs expose declared add and remove operations and stay si
     REQUIRE_FALSE(registry.has<Disabled>(entity));
 }
 
+TEST_CASE("structural jobs dispatch matching lifecycle hooks") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+    registry.register_component<Disabled>("Disabled");
+
+    const ashiato::Entity entity = registry.create();
+    REQUIRE(registry.add<Position>(entity, Position{1, 0}) != nullptr);
+
+    int added_count = 0;
+    int removed_count = 0;
+    auto add_subscription = registry.on_component_add<Disabled>(
+        [&](ashiato::Registry& hooked_registry, ashiato::Entity hooked_entity) {
+            REQUIRE(hooked_entity == entity);
+            REQUIRE(hooked_registry.has<Disabled>(hooked_entity));
+            ++added_count;
+        });
+    auto remove_subscription = registry.on_component_remove<Disabled>(
+        [&](ashiato::Registry& hooked_registry, ashiato::Entity hooked_entity) {
+            REQUIRE(hooked_entity == entity);
+            REQUIRE(hooked_registry.has<Disabled>(hooked_entity));
+            ++removed_count;
+        });
+    REQUIRE(add_subscription.active());
+    REQUIRE(remove_subscription.active());
+
+    registry.job<const Position>(0).structural<Disabled>().each(
+        [](auto& view, ashiato::Entity current, const Position&) {
+            REQUIRE(view.template add<Disabled>(current));
+        });
+    registry.job<const Position>(1).structural<Disabled>().each(
+        [](auto& view, ashiato::Entity current, const Position&) {
+            REQUIRE(view.template remove<Disabled>(current));
+        });
+
+    registry.run_jobs();
+
+    REQUIRE(added_count == 1);
+    REQUIRE(removed_count == 1);
+    REQUIRE_FALSE(registry.has<Disabled>(entity));
+}
+
+TEST_CASE("mutable jobs and writes do not dispatch lifecycle hooks") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+
+    const ashiato::Entity entity = registry.create();
+    REQUIRE(registry.add<Position>(entity, Position{1, 0}) != nullptr);
+
+    int added_count = 0;
+    auto add_subscription = registry.on_component_add<Position>(
+        [&](ashiato::Registry&, ashiato::Entity) {
+            ++added_count;
+        });
+    REQUIRE(add_subscription.active());
+
+    registry.write<Position>(entity).x = 2;
+    registry.job<Position>(0).each([](ashiato::Entity, Position& position) {
+        position.x += 1;
+    });
+
+    registry.run_jobs();
+
+    REQUIRE(registry.get<Position>(entity).x == 3);
+    REQUIRE(added_count == 0);
+}
+
 TEST_CASE("structural jobs are isolated from otherwise independent jobs") {
     ashiato::Registry registry;
     registry.register_component<Position>("Position");

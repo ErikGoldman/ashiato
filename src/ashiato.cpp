@@ -8,6 +8,43 @@ Registry::Registry() {
     register_primitive_types();
 }
 
+Registry::ComponentLifecycleHookSubscription::ComponentLifecycleHookSubscription(
+    std::function<void()> unsubscribe)
+    : unsubscribe_(std::move(unsubscribe)), active_(static_cast<bool>(unsubscribe_)) {}
+
+Registry::ComponentLifecycleHookSubscription::ComponentLifecycleHookSubscription(
+    ComponentLifecycleHookSubscription&& other) noexcept
+    : unsubscribe_(std::move(other.unsubscribe_)), active_(other.active_) {
+    other.active_ = false;
+}
+
+Registry::ComponentLifecycleHookSubscription& Registry::ComponentLifecycleHookSubscription::operator=(
+    ComponentLifecycleHookSubscription&& other) noexcept {
+    if (this != &other) {
+        reset();
+        unsubscribe_ = std::move(other.unsubscribe_);
+        active_ = other.active_;
+        other.active_ = false;
+    }
+
+    return *this;
+}
+
+Registry::ComponentLifecycleHookSubscription::~ComponentLifecycleHookSubscription() {
+    reset();
+}
+
+void Registry::ComponentLifecycleHookSubscription::reset() {
+    if (!active_) {
+        return;
+    }
+
+    active_ = false;
+    if (unsubscribe_) {
+        unsubscribe_();
+    }
+}
+
 Entity Registry::register_component(ComponentDesc desc) {
     require_runtime_registry_access_allowed("register_component");
     ComponentLifecycle lifecycle;
@@ -79,8 +116,160 @@ bool Registry::add_component_field(Entity component, ComponentField field) {
     return true;
 }
 
+Registry::ComponentLifecycleHookSubscription Registry::on_component_add(
+    Entity component,
+    ComponentLifecycleHook callback) {
+    require_runtime_registry_access_allowed("on_component_add");
+    return subscribe_component_lifecycle_hook(component, true, std::move(callback));
+}
+
+Registry::ComponentLifecycleHookSubscription Registry::on_component_remove(
+    Entity component,
+    ComponentLifecycleHook callback) {
+    require_runtime_registry_access_allowed("on_component_remove");
+    return subscribe_component_lifecycle_hook(component, false, std::move(callback));
+}
+
+Registry::ComponentLifecycleHookSubscription Registry::subscribe_component_lifecycle_hook(
+    Entity component,
+    bool add_hook,
+    ComponentLifecycleHook callback) {
+    require_component_record(component);
+    if (!callback) {
+        return ComponentLifecycleHookSubscription{};
+    }
+
+    const std::uint32_t component_index = entity_index(component);
+    const std::uint64_t id = component_lifecycle_hooks_->next_id++;
+    ComponentLifecycleHookList& list = component_lifecycle_hooks_->hooks[component_index];
+    std::vector<ComponentLifecycleHookEntry>& target = add_hook ? list.add : list.remove;
+    target.push_back(ComponentLifecycleHookEntry{id, std::move(callback)});
+    ++component_lifecycle_hooks_->revision;
+
+    const std::weak_ptr<ComponentLifecycleHookRegistry> weak_hooks = component_lifecycle_hooks_;
+    return ComponentLifecycleHookSubscription([weak_hooks, component_index, add_hook, id]() {
+        const std::shared_ptr<ComponentLifecycleHookRegistry> hooks = weak_hooks.lock();
+        if (!hooks) {
+            return;
+        }
+
+        auto found = hooks->hooks.find(component_index);
+        if (found == hooks->hooks.end()) {
+            return;
+        }
+
+        ComponentLifecycleHookList& hook_list = found->second;
+        std::vector<ComponentLifecycleHookEntry>& hook_entries = add_hook ? hook_list.add : hook_list.remove;
+        const std::size_t old_size = hook_entries.size();
+        hook_entries.erase(
+            std::remove_if(
+                hook_entries.begin(),
+                hook_entries.end(),
+                [&](const ComponentLifecycleHookEntry& entry) {
+                    return entry.id == id;
+                }),
+            hook_entries.end());
+        if (hook_entries.size() == old_size) {
+            return;
+        }
+
+        if (hook_list.add.empty() && hook_list.remove.empty()) {
+            hooks->hooks.erase(found);
+        }
+        ++hooks->revision;
+    });
+}
+
+void Registry::unsubscribe_component_lifecycle_hook(std::uint32_t component, bool add_hook, std::uint64_t id) {
+    auto found = component_lifecycle_hooks_->hooks.find(component);
+    if (found == component_lifecycle_hooks_->hooks.end()) {
+        return;
+    }
+
+    ComponentLifecycleHookList& list = found->second;
+    std::vector<ComponentLifecycleHookEntry>& target = add_hook ? list.add : list.remove;
+    const std::size_t old_size = target.size();
+    target.erase(
+        std::remove_if(
+            target.begin(),
+            target.end(),
+            [&](const ComponentLifecycleHookEntry& entry) {
+                return entry.id == id;
+            }),
+        target.end());
+    if (target.size() == old_size) {
+        return;
+    }
+
+    if (list.add.empty() && list.remove.empty()) {
+        component_lifecycle_hooks_->hooks.erase(found);
+    }
+    ++component_lifecycle_hooks_->revision;
+}
+
+bool Registry::has_component_lifecycle_hooks(std::uint32_t component) const {
+    const auto found = component_lifecycle_hooks_->hooks.find(component);
+    return found != component_lifecycle_hooks_->hooks.end() &&
+        (!found->second.add.empty() || !found->second.remove.empty());
+}
+
+bool Registry::component_lifecycle_hooks_match(
+    const std::vector<std::uint32_t>& components,
+    ComponentLifecycleHookMatchCache& cache) const {
+    if (cache.revision == component_lifecycle_hooks_->revision) {
+        return cache.matches;
+    }
+
+    cache.matches = false;
+    for (std::uint32_t component : components) {
+        if (has_component_lifecycle_hooks(component)) {
+            cache.matches = true;
+            break;
+        }
+    }
+    cache.revision = component_lifecycle_hooks_->revision;
+    return cache.matches;
+}
+
+void Registry::dispatch_component_add_hooks(Entity component, Entity entity) {
+    auto found = component_lifecycle_hooks_->hooks.find(entity_index(component));
+    if (found == component_lifecycle_hooks_->hooks.end() || found->second.add.empty()) {
+        return;
+    }
+
+    std::vector<ComponentLifecycleHook> callbacks;
+    callbacks.reserve(found->second.add.size());
+    for (const ComponentLifecycleHookEntry& entry : found->second.add) {
+        callbacks.push_back(entry.callback);
+    }
+    for (const ComponentLifecycleHook& callback : callbacks) {
+        callback(*this, entity);
+    }
+}
+
+void Registry::dispatch_component_remove_hooks(Entity component, Entity entity) {
+    auto found = component_lifecycle_hooks_->hooks.find(entity_index(component));
+    if (found == component_lifecycle_hooks_->hooks.end() || found->second.remove.empty()) {
+        return;
+    }
+
+    std::vector<ComponentLifecycleHook> callbacks;
+    callbacks.reserve(found->second.remove.size());
+    for (const ComponentLifecycleHookEntry& entry : found->second.remove) {
+        callbacks.push_back(entry.callback);
+    }
+    for (const ComponentLifecycleHook& callback : callbacks) {
+        callback(*this, entity);
+    }
+}
+
 bool Registry::add_tag(Entity entity, Entity tag) {
     require_runtime_registry_access_allowed("add_tag");
+    return add_tag_impl<true>(entity, tag);
+}
+
+template <bool DispatchHooks>
+bool Registry::add_tag_impl(Entity entity, Entity tag) {
     const ComponentRecord& record = require_component_record(tag);
     if (!record.info.tag) {
         throw std::logic_error("ashiato component entity is not a tag");
@@ -89,18 +278,31 @@ bool Registry::add_tag(Entity entity, Entity tag) {
         return false;
     }
 
-    storage_for(tag).emplace_or_replace_tag(entity);
-    refresh_group_after_add(entity_index(entity), entity_index(tag));
+    TypeErasedStorage& storage = storage_for(tag);
+    const std::uint32_t index = entity_index(entity);
+    const bool created = !storage.contains_index(index);
+    storage.emplace_or_replace_tag(entity);
+    refresh_group_after_add(index, entity_index(tag));
+    if constexpr (DispatchHooks) {
+        if (created) {
+            dispatch_component_add_hooks(tag, entity);
+        }
+    }
     return true;
 }
 
 bool Registry::remove_tag(Entity entity, Entity tag) {
     require_runtime_registry_access_allowed("remove_tag");
-    return remove(entity, tag);
+    return remove_component<true>(entity, tag);
 }
 
 void* Registry::add(Entity entity, Entity component, const void* value) {
     require_runtime_registry_access_allowed("add");
+    return add_component_bytes<true>(entity, component, value);
+}
+
+template <bool DispatchHooks>
+void* Registry::add_component_bytes(Entity entity, Entity component, const void* value) {
     const ComponentRecord& record = require_component_record(component);
     if (record.info.tag) {
         throw std::logic_error("ashiato tags cannot be added as writable components");
@@ -112,9 +314,68 @@ void* Registry::add(Entity entity, Entity component, const void* value) {
         return nullptr;
     }
 
-    void* added = storage_for(component).emplace_or_replace_bytes(entity, value);
-    refresh_group_after_add(entity_index(entity), entity_index(component));
+    TypeErasedStorage& storage = storage_for(component);
+    const std::uint32_t index = entity_index(entity);
+    const bool created = !storage.contains_index(index);
+    void* added = storage.emplace_or_replace_bytes(entity, value);
+    refresh_group_after_add(index, entity_index(component));
+    if constexpr (DispatchHooks) {
+        if (created) {
+            dispatch_component_add_hooks(component, entity);
+        }
+    }
     return added;
+}
+
+template <bool DispatchHooks>
+void* Registry::ensure_component(Entity entity, Entity component) {
+    const ComponentRecord& record = require_component_record(component);
+    if (record.info.tag) {
+        throw std::logic_error("ashiato tags cannot be ensured as writable components");
+    }
+    if (record.singleton) {
+        return storage_for(component).ensure(singleton_entity());
+    }
+    if (!alive(entity)) {
+        return nullptr;
+    }
+
+    TypeErasedStorage& storage = storage_for(component);
+    const std::uint32_t index = entity_index(entity);
+    const bool created = !storage.contains_index(index);
+    void* ensured = storage.ensure(entity);
+    refresh_group_after_add(index, entity_index(component));
+    if constexpr (DispatchHooks) {
+        if (created) {
+            dispatch_component_add_hooks(component, entity);
+        }
+    }
+    return ensured;
+}
+
+template <bool DispatchHooks>
+bool Registry::remove_component(Entity entity, Entity component) {
+    const ComponentRecord& record = require_component_record(component);
+    if (record.singleton) {
+        return false;
+    }
+    if (!alive(entity)) {
+        return false;
+    }
+
+    if (auto* found = find_storage(component)) {
+        const std::uint32_t index = entity_index(entity);
+        if (!found->contains_index(index)) {
+            return false;
+        }
+        if constexpr (DispatchHooks) {
+            dispatch_component_remove_hooks(component, entity);
+        }
+        remove_from_groups_before_component_removal(index, entity_index(component));
+        return found->remove(entity);
+    }
+
+    return false;
 }
 
 void* Registry::write(Entity entity, Entity component) {
@@ -731,6 +992,9 @@ void Registry::unregister_component_entity(Entity component) {
         group_index_.groups.end());
     rebuild_group_ownership();
     storage_registry_.storages.erase(component_index);
+    if (component_lifecycle_hooks_->hooks.erase(component_index) != 0) {
+        ++component_lifecycle_hooks_->revision;
+    }
 
     if (!record->name.empty()) {
         component_catalog_.names.erase(record->name);
@@ -1110,5 +1374,14 @@ bool Registry::job_excluded_by_options(const JobRecord& job, const RunJobsOption
     }
     return false;
 }
+
+template bool Registry::add_tag_impl<true>(Entity, Entity);
+template bool Registry::add_tag_impl<false>(Entity, Entity);
+template void* Registry::add_component_bytes<true>(Entity, Entity, const void*);
+template void* Registry::add_component_bytes<false>(Entity, Entity, const void*);
+template void* Registry::ensure_component<true>(Entity, Entity);
+template void* Registry::ensure_component<false>(Entity, Entity);
+template bool Registry::remove_component<true>(Entity, Entity);
+template bool Registry::remove_component<false>(Entity, Entity);
 
 }  // namespace ashiato
