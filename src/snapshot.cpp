@@ -1366,7 +1366,8 @@ void Registry::restore_delta_snapshot(const DeltaSnapshot& snapshot) {
             if (entity_index >= entity_store_.slots.size() || slot_index(entity_store_.slots[entity_index]) != entity_index) {
                 throw std::logic_error("ashiato delta snapshot entity is not alive");
             }
-            storage_for(component).emplace_or_replace_copy(Entity{entity_index}, delta_storage.get_dense(dense));
+            const Entity entity{entity_store_.slots[entity_index]};
+            storage_for(component).emplace_or_replace_copy(entity, delta_storage.get_dense(dense));
             refresh_group_after_add(entity_index, component_index);
         }
     }

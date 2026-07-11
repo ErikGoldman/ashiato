@@ -870,9 +870,7 @@ Entity Registry::register_component_impl(
         }
     }
 
-    const Entity component = create();
     ComponentRecord record;
-    record.entity = component;
     record.name = std::move(desc.name);
     record.type_key = std::move(type_key);
     record.info = ComponentInfo{desc.size, desc.alignment, trivially_copyable, tag};
@@ -884,6 +882,8 @@ Entity Registry::register_component_impl(
     record.type_id = npos_type_id;
     record.singleton = singleton;
 
+    const Entity component = create();
+    record.entity = component;
     const std::uint32_t index = entity_index(component);
     if (!record.name.empty()) {
         component_catalog_.names[record.name] = index;

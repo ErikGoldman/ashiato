@@ -123,7 +123,7 @@ TEST_CASE("component registration rejects invalid field metadata") {
     REQUIRE_THROWS_AS(registry.register_component(std::move(desc)), std::invalid_argument);
 }
 
-TEST_CASE("rejected component registration does not consume an entity slot", "[!mayfail]") {
+TEST_CASE("rejected component registration does not consume an entity slot") {
     ashiato::Registry registry;
     const ashiato::Entity before = registry.create();
 

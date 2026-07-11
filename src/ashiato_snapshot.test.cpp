@@ -767,9 +767,7 @@ TEST_CASE("dirty snapshot tracker owns full and delta baseline cadence") {
     REQUIRE(frames[2] == ashiato::DirtySnapshotFrameKind::Full);
 }
 
-TEST_CASE(
-    "delta restore clears a baseline removal tombstone when the same entity generation is re-added",
-    "[!mayfail]") {
+TEST_CASE("delta restore clears a baseline removal tombstone when the same entity generation is re-added") {
     ashiato::Registry source;
     source.register_component<Position>("Position");
     const ashiato::Entity entity = source.create();
