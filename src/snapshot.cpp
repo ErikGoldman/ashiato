@@ -1012,6 +1012,12 @@ void RegistryDirtyFrameBroadcastSubscription::reset() {
             break;
         }
     }
+    for (Entry& entry : state->pending_consumers) {
+        if (entry.id == id_) {
+            entry.listener = nullptr;
+            break;
+        }
+    }
     id_ = 0;
     state_.reset();
 }
@@ -1026,30 +1032,66 @@ RegistryDirtyFrameBroadcaster::RegistryDirtyFrameBroadcaster()
 RegistryDirtyFrameBroadcastSubscription RegistryDirtyFrameBroadcaster::subscribe(
     RegistryDirtyFrameBroadcastListener& listener) {
     const std::uint64_t id = listeners_->next_id++;
-    listeners_->consumers.push_back(RegistryDirtyFrameBroadcastSubscription::Entry{id, &listener});
+    RegistryDirtyFrameBroadcastSubscription::Entry entry{id, &listener};
+    if (listeners_->broadcast_depth == 0) {
+        listeners_->consumers.push_back(entry);
+    } else {
+        listeners_->pending_consumers.push_back(entry);
+    }
     return RegistryDirtyFrameBroadcastSubscription(listeners_, id);
 }
 
 void RegistryDirtyFrameBroadcaster::broadcast(Registry& registry) {
     const auto dirty_scope = registry.dirty_scope();
     const RegistryDirtyFrame dirty_frame{registry, dirty_scope.view()};
-    for (const RegistryDirtyFrameBroadcastSubscription::Entry& entry : listeners_->consumers) {
-        if (entry.listener != nullptr) {
-            entry.listener->on_registry_dirty_frame(dirty_frame);
+    ++listeners_->broadcast_depth;
+    try {
+        for (const RegistryDirtyFrameBroadcastSubscription::Entry& entry : listeners_->consumers) {
+            if (entry.listener != nullptr) {
+                entry.listener->on_registry_dirty_frame(dirty_frame);
+            }
         }
+    } catch (...) {
+        const std::exception_ptr listener_exception = std::current_exception();
+        try {
+            finish_broadcast();
+        } catch (...) {  // NOLINT(bugprone-empty-catch)
+            // Preserve the listener failure. Pending entries remain queued and
+            // a later broadcast will retry insertion.
+        }
+        std::rethrow_exception(listener_exception);
     }
-    remove_unsubscribed();
+    finish_broadcast();
 }
 
 void RegistryDirtyFrameBroadcaster::remove_unsubscribed() {
-    listeners_->consumers.erase(
-        std::remove_if(
-            listeners_->consumers.begin(),
-            listeners_->consumers.end(),
-            [](const RegistryDirtyFrameBroadcastSubscription::Entry& entry) {
-                return entry.listener == nullptr;
-            }),
-        listeners_->consumers.end());
+    const auto remove_null_listeners = [](auto& entries) {
+        entries.erase(
+            std::remove_if(
+                entries.begin(),
+                entries.end(),
+                [](const RegistryDirtyFrameBroadcastSubscription::Entry& entry) {
+                    return entry.listener == nullptr;
+                }),
+            entries.end());
+    };
+    remove_null_listeners(listeners_->consumers);
+    remove_null_listeners(listeners_->pending_consumers);
+}
+
+void RegistryDirtyFrameBroadcaster::finish_broadcast() {
+    assert(listeners_->broadcast_depth != 0);
+    --listeners_->broadcast_depth;
+    if (listeners_->broadcast_depth != 0) {
+        return;
+    }
+
+    remove_unsubscribed();
+    listeners_->consumers.insert(
+        listeners_->consumers.end(),
+        std::make_move_iterator(listeners_->pending_consumers.begin()),
+        std::make_move_iterator(listeners_->pending_consumers.end()));
+    listeners_->pending_consumers.clear();
 }
 
 DirtySnapshotTracker::DirtySnapshotTracker(DirtySnapshotTrackerOptions options)

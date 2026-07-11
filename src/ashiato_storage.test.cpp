@@ -2,6 +2,48 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+namespace {
+
+struct ThrowingConstructionComponent {
+    int value = 0;
+
+    explicit ThrowingConstructionComponent(int next_value)
+        : value(next_value) {
+        if (next_value < 0) {
+            throw std::runtime_error("construction failed");
+        }
+    }
+
+    ThrowingConstructionComponent(const ThrowingConstructionComponent&) = default;
+    ThrowingConstructionComponent(ThrowingConstructionComponent&&) noexcept = default;
+};
+
+struct ThrowingCopyComponent {
+    inline static bool throw_on_copy = false;
+
+    int value = 0;
+
+    explicit ThrowingCopyComponent(int next_value = 0)
+        : value(next_value) {}
+
+    ThrowingCopyComponent(const ThrowingCopyComponent& other)
+        : value(other.value) {
+        if (throw_on_copy) {
+            throw std::runtime_error("copy failed");
+        }
+    }
+
+    ThrowingCopyComponent(ThrowingCopyComponent&&) noexcept = default;
+};
+
+struct ThrowingCopyFlagReset {
+    ~ThrowingCopyFlagReset() {
+        ThrowingCopyComponent::throw_on_copy = false;
+    }
+};
+
+}  // namespace
+
 TEST_CASE("dirty component iteration exposes current values and removal tombstones") {
     ashiato::Registry registry;
     registry.register_component<Position>("Position");
@@ -468,6 +510,96 @@ TEST_CASE("non-trivial component replacement destroys the old value") {
 
     REQUIRE(registry.remove<Tracker>(entity));
     REQUIRE(counts.constructed == counts.destroyed);
+}
+
+TEST_CASE("throwing component construction leaves storage usable") {
+    ashiato::Registry registry;
+    registry.register_component<ThrowingConstructionComponent>("ThrowingConstructionComponent");
+    const ashiato::Entity failed = registry.create();
+    const ashiato::Entity valid = registry.create();
+
+    registry.clear_all_dirty<ThrowingConstructionComponent>();
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        REQUIRE_THROWS_AS(
+            registry.add<ThrowingConstructionComponent>(failed, -1),
+            std::runtime_error);
+    }
+    REQUIRE_FALSE(registry.contains<ThrowingConstructionComponent>(failed));
+    REQUIRE_FALSE(registry.is_dirty<ThrowingConstructionComponent>(failed));
+
+    std::vector<ashiato::Entity> added_entities;
+    registry.each_added<ThrowingConstructionComponent>(
+        [&](ashiato::Entity entity, const void*) { added_entities.push_back(entity); });
+    REQUIRE(added_entities.empty());
+
+    ThrowingConstructionComponent* added =
+        registry.add<ThrowingConstructionComponent>(valid, 7);
+    REQUIRE(added != nullptr);
+    REQUIRE(registry.contains<ThrowingConstructionComponent>(valid));
+    REQUIRE(registry.get<ThrowingConstructionComponent>(valid).value == 7);
+}
+
+TEST_CASE("throwing component replacement preserves the old value and dirty state") {
+    ashiato::Registry registry;
+    registry.register_component<ThrowingConstructionComponent>("ThrowingConstructionComponent");
+    const ashiato::Entity entity = registry.create();
+    REQUIRE(registry.add<ThrowingConstructionComponent>(entity, 7) != nullptr);
+    registry.clear_all_dirty<ThrowingConstructionComponent>();
+
+    REQUIRE_THROWS_AS(
+        registry.add<ThrowingConstructionComponent>(entity, -1),
+        std::runtime_error);
+
+    REQUIRE(registry.contains<ThrowingConstructionComponent>(entity));
+    REQUIRE(registry.get<ThrowingConstructionComponent>(entity).value == 7);
+    REQUIRE_FALSE(registry.is_dirty<ThrowingConstructionComponent>(entity));
+}
+
+TEST_CASE("throwing reconstruction preserves the removal tombstone") {
+    ashiato::Registry registry;
+    registry.register_component<ThrowingConstructionComponent>("ThrowingConstructionComponent");
+    const ashiato::Entity entity = registry.create();
+    REQUIRE(registry.add<ThrowingConstructionComponent>(entity, 7) != nullptr);
+    registry.clear_all_dirty<ThrowingConstructionComponent>();
+    REQUIRE(registry.remove<ThrowingConstructionComponent>(entity));
+
+    REQUIRE_THROWS_AS(
+        registry.add<ThrowingConstructionComponent>(entity, -1),
+        std::runtime_error);
+
+    std::vector<ashiato::Entity> removed_entities;
+    registry.each_removed<ThrowingConstructionComponent>(
+        [&](ashiato::Registry::ComponentRemoval removal) { removed_entities.push_back(removal.entity); });
+    REQUIRE(removed_entities == std::vector<ashiato::Entity>{entity});
+
+    REQUIRE(registry.add<ThrowingConstructionComponent>(entity, 9) != nullptr);
+    removed_entities.clear();
+    registry.each_removed<ThrowingConstructionComponent>(
+        [&](ashiato::Registry::ComponentRemoval removal) { removed_entities.push_back(removal.entity); });
+    REQUIRE(removed_entities.empty());
+}
+
+TEST_CASE("throwing type-erased copy insertion leaves restored storage usable") {
+    const ThrowingCopyFlagReset reset_copy_flag;
+    ThrowingCopyComponent::throw_on_copy = false;
+    ashiato::Registry registry;
+    registry.register_component<ThrowingCopyComponent>("ThrowingCopyComponent");
+    const ashiato::Entity entity = registry.create();
+    REQUIRE(registry.add<ThrowingCopyComponent>(entity, 1) != nullptr);
+    const ashiato::Registry::Snapshot baseline = registry.create_snapshot();
+
+    registry.write<ThrowingCopyComponent>(entity).value = 2;
+    const ashiato::Registry::DeltaSnapshot delta = registry.create_delta_snapshot(baseline);
+    registry.restore_snapshot(baseline);
+    REQUIRE(registry.remove<ThrowingCopyComponent>(entity));
+
+    ThrowingCopyComponent::throw_on_copy = true;
+    REQUIRE_THROWS_AS(registry.restore_delta_snapshot(delta), std::runtime_error);
+    ThrowingCopyComponent::throw_on_copy = false;
+
+    REQUIRE_FALSE(registry.contains<ThrowingCopyComponent>(entity));
+    REQUIRE(registry.add<ThrowingCopyComponent>(entity, 3) != nullptr);
+    REQUIRE(registry.get<ThrowingCopyComponent>(entity).value == 3);
 }
 
 TEST_CASE("non-trivial storage growth and middle removal preserve live values") {

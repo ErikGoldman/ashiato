@@ -112,16 +112,8 @@ void Registry::TypeErasedStorage::emplace_or_replace_tag(Entity entity) {
     }
 
     ensure_sparse(index);
-    clear_tombstone_for_entity(entity);
-
-    const std::uint32_t dense = static_cast<std::uint32_t>(size_);
-    dense_indices_.push_back(index);
-    dirty_.push_back(1);
-    added_.push_back(1);
-    ++dirty_count_;
-    ++added_count_;
-    sparse_[index] = dense;
-    ++size_;
+    ensure_insert_capacity(size_ + 1);
+    commit_insert_metadata(entity);
 }
 
 void* Registry::TypeErasedStorage::emplace_or_replace_bytes(Entity entity, const void* value) {
@@ -134,25 +126,17 @@ void* Registry::TypeErasedStorage::emplace_or_replace_bytes(Entity entity, const
 
     const std::uint32_t index = Registry::entity_index(entity);
     if (void* existing = get(index)) {
-        mark_dirty_dense(sparse_[index]);
         assign_bytes(existing, value);
+        mark_dirty_dense(sparse_[index]);
         return existing;
     }
 
     ensure_sparse(index);
-    clear_tombstone_for_entity(entity);
-    ensure_capacity(size_ + 1);
+    ensure_insert_capacity(size_ + 1);
 
-    const std::uint32_t dense = static_cast<std::uint32_t>(size_);
-    dense_indices_.push_back(index);
-    dirty_.push_back(1);
-    added_.push_back(1);
-    ++dirty_count_;
-    ++added_count_;
-    sparse_[index] = dense;
     void* target = data_ + size_ * info_.size;
     assign_bytes(target, value);
-    ++size_;
+    commit_insert_metadata(entity);
     return target;
 }
 
@@ -163,24 +147,16 @@ void Registry::TypeErasedStorage::emplace_or_replace_copy(Entity entity, const v
     }
     const std::uint32_t index = Registry::entity_index(entity);
     if (void* existing = get(index)) {
-        mark_dirty_dense(sparse_[index]);
         replace_copy(existing, value);
+        mark_dirty_dense(sparse_[index]);
         return;
     }
 
     ensure_sparse(index);
-    clear_tombstone_for_entity(entity);
-    ensure_capacity(size_ + 1);
+    ensure_insert_capacity(size_ + 1);
 
-    const std::uint32_t dense = static_cast<std::uint32_t>(size_);
-    dense_indices_.push_back(index);
-    dirty_.push_back(1);
-    added_.push_back(1);
-    ++dirty_count_;
-    ++added_count_;
-    sparse_[index] = dense;
     construct_copy(data_ + size_ * info_.size, value);
-    ++size_;
+    commit_insert_metadata(entity);
 }
 
 void* Registry::TypeErasedStorage::ensure(Entity entity) {
@@ -588,7 +564,9 @@ bool Registry::TypeErasedStorage::contains(std::uint32_t index) const {
 
 void Registry::TypeErasedStorage::ensure_capacity(std::size_t required) {
     if (info_.tag) {
-        capacity_ = std::max(capacity_, required);
+        if (required > capacity_) {
+            capacity_ = std::max<std::size_t>(required, capacity_ == 0 ? 8 : capacity_ * 2);
+        }
         return;
     }
     if (required <= capacity_) {
@@ -627,6 +605,34 @@ void Registry::TypeErasedStorage::ensure_capacity(std::size_t required) {
     deallocate(data_, info_.alignment);
     data_ = next;
     capacity_ = next_capacity;
+}
+
+void Registry::TypeErasedStorage::ensure_insert_capacity(std::size_t required) {
+    ensure_capacity(required);
+    dense_indices_.reserve(capacity_);
+    dirty_.reserve(capacity_);
+    added_.reserve(capacity_);
+}
+
+void Registry::TypeErasedStorage::commit_insert_metadata(Entity entity) noexcept {
+    assert(size_ < capacity_);
+    assert(dense_indices_.size() == size_);
+    assert(dirty_.size() == size_);
+    assert(added_.size() == size_);
+    assert(dense_indices_.capacity() > size_);
+    assert(dirty_.capacity() > size_);
+    assert(added_.capacity() > size_);
+
+    const std::uint32_t index = Registry::entity_index(entity);
+    const std::uint32_t dense = static_cast<std::uint32_t>(size_);
+    clear_tombstone_for_entity(entity);
+    dense_indices_.push_back(index);
+    dirty_.push_back(1);
+    added_.push_back(1);
+    sparse_[index] = dense;
+    ++dirty_count_;
+    ++added_count_;
+    ++size_;
 }
 
 void Registry::TypeErasedStorage::erase_at(std::uint32_t dense) {
@@ -708,7 +714,7 @@ void Registry::TypeErasedStorage::mark_tombstone_index(std::uint32_t index, unsi
     mark_tombstone(Entity{index}, flags);
 }
 
-void Registry::TypeErasedStorage::clear_tombstone(std::uint32_t index) {
+void Registry::TypeErasedStorage::clear_tombstone(std::uint32_t index) noexcept {
     if (index < tombstones_.size() && tombstones_[index] != no_tombstone) {
         tombstones_[index] = no_tombstone;
         if (index < tombstone_entities_.size()) {
@@ -719,7 +725,7 @@ void Registry::TypeErasedStorage::clear_tombstone(std::uint32_t index) {
     }
 }
 
-void Registry::TypeErasedStorage::clear_tombstone_for_entity(Entity entity) {
+void Registry::TypeErasedStorage::clear_tombstone_for_entity(Entity entity) noexcept {
     const std::uint32_t index = Registry::entity_index(entity);
     if (index >= tombstones_.size() || tombstones_[index] == no_tombstone) {
         return;
@@ -782,7 +788,7 @@ void Registry::TypeErasedStorage::mark_dirty_or_defer(std::uint32_t index, std::
     mark_dirty_dense(dense);
 }
 
-void Registry::TypeErasedStorage::erase_tombstone_index(std::uint32_t index) {
+void Registry::TypeErasedStorage::erase_tombstone_index(std::uint32_t index) noexcept {
     const auto found = std::find(tombstone_indices_.begin(), tombstone_indices_.end(), index);
     if (found != tombstone_indices_.end()) {
         tombstone_indices_.erase(found);

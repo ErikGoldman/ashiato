@@ -120,8 +120,8 @@ TEST_CASE("jobs can filter iterated entities by typed tags") {
     registry.job<const Position>(1)
         .without_tags<const Disabled>()
         .structural<Active>()
-        .each([](auto& view, ashiato::Entity entity, const Position&) {
-            REQUIRE(view.template add<Active>(entity));
+        .each([](auto& view, ashiato::Entity, const Position&) {
+            REQUIRE(view.template add<Active>());
         });
 
     registry.set_job_thread_executor([](const std::vector<ashiato::JobThreadTask>& tasks) {

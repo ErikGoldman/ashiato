@@ -232,6 +232,78 @@ void zero_native_typed_component_table(std::string& bytes) {
     }
 }
 
+struct CountingDirtyFrameListener : ashiato::RegistryDirtyFrameBroadcastListener {
+    int calls = 0;
+
+    void on_registry_dirty_frame(const ashiato::RegistryDirtyFrame&) override {
+        ++calls;
+    }
+};
+
+struct SubscribingDirtyFrameListener : ashiato::RegistryDirtyFrameBroadcastListener {
+    ashiato::RegistryDirtyFrameBroadcaster* broadcaster = nullptr;
+    CountingDirtyFrameListener* target = nullptr;
+    std::vector<ashiato::RegistryDirtyFrameBroadcastSubscription>* subscriptions = nullptr;
+    bool subscribed = false;
+
+    void on_registry_dirty_frame(const ashiato::RegistryDirtyFrame&) override {
+        if (subscribed) {
+            return;
+        }
+        subscribed = true;
+        for (std::size_t index = 0; index < 128; ++index) {
+            subscriptions->push_back(broadcaster->subscribe(*target));
+        }
+    }
+};
+
+struct CancelingDirtyFrameListener : ashiato::RegistryDirtyFrameBroadcastListener {
+    ashiato::RegistryDirtyFrameBroadcaster* broadcaster = nullptr;
+    CountingDirtyFrameListener* target = nullptr;
+    bool subscribed = false;
+
+    void on_registry_dirty_frame(const ashiato::RegistryDirtyFrame&) override {
+        if (subscribed) {
+            return;
+        }
+        subscribed = true;
+        auto subscription = broadcaster->subscribe(*target);
+        subscription.reset();
+    }
+};
+
+struct NestedBroadcastListener : ashiato::RegistryDirtyFrameBroadcastListener {
+    ashiato::RegistryDirtyFrameBroadcaster* broadcaster = nullptr;
+    CountingDirtyFrameListener* target = nullptr;
+    std::vector<ashiato::RegistryDirtyFrameBroadcastSubscription>* subscriptions = nullptr;
+    bool nested = false;
+
+    void on_registry_dirty_frame(const ashiato::RegistryDirtyFrame& frame) override {
+        if (nested) {
+            return;
+        }
+        nested = true;
+        subscriptions->push_back(broadcaster->subscribe(*target));
+        broadcaster->broadcast(frame.registry);
+    }
+};
+
+struct ThrowingSubscribingDirtyFrameListener : ashiato::RegistryDirtyFrameBroadcastListener {
+    ashiato::RegistryDirtyFrameBroadcaster* broadcaster = nullptr;
+    CountingDirtyFrameListener* target = nullptr;
+    std::vector<ashiato::RegistryDirtyFrameBroadcastSubscription>* subscriptions = nullptr;
+    bool should_throw = true;
+
+    void on_registry_dirty_frame(const ashiato::RegistryDirtyFrame&) override {
+        if (!should_throw) {
+            return;
+        }
+        should_throw = false;
+        subscriptions->push_back(broadcaster->subscribe(*target));
+        throw std::runtime_error("listener failed");
+    }
+};
+
 }  // namespace
 
 TEST_CASE("registry snapshots restore entities components metadata groups singletons and dirty bits") {
@@ -689,6 +761,79 @@ TEST_CASE("dirty snapshot tracker owns full and delta baseline cadence") {
     REQUIRE(frames[0] == ashiato::DirtySnapshotFrameKind::Full);
     REQUIRE(frames[1] == ashiato::DirtySnapshotFrameKind::Delta);
     REQUIRE(frames[2] == ashiato::DirtySnapshotFrameKind::Full);
+}
+
+TEST_CASE("dirty frame listeners can subscribe during broadcast") {
+    ashiato::Registry registry;
+    ashiato::RegistryDirtyFrameBroadcaster broadcaster;
+    CountingDirtyFrameListener counting_listener;
+    std::vector<ashiato::RegistryDirtyFrameBroadcastSubscription> subscriptions;
+
+    SubscribingDirtyFrameListener subscribing_listener;
+    subscribing_listener.broadcaster = &broadcaster;
+    subscribing_listener.target = &counting_listener;
+    subscribing_listener.subscriptions = &subscriptions;
+
+    subscriptions.push_back(broadcaster.subscribe(subscribing_listener));
+    subscriptions.push_back(broadcaster.subscribe(counting_listener));
+
+    broadcaster.broadcast(registry);
+    REQUIRE(counting_listener.calls == 1);
+
+    broadcaster.broadcast(registry);
+    REQUIRE(counting_listener.calls == 130);
+}
+
+TEST_CASE("dirty frame subscriptions canceled while pending are never inserted") {
+    ashiato::Registry registry;
+    ashiato::RegistryDirtyFrameBroadcaster broadcaster;
+    CountingDirtyFrameListener counting_listener;
+    CancelingDirtyFrameListener canceling_listener;
+    canceling_listener.broadcaster = &broadcaster;
+    canceling_listener.target = &counting_listener;
+
+    auto subscription = broadcaster.subscribe(canceling_listener);
+    broadcaster.broadcast(registry);
+    broadcaster.broadcast(registry);
+
+    REQUIRE(subscription.active());
+    REQUIRE(counting_listener.calls == 0);
+}
+
+TEST_CASE("dirty frame subscriptions remain pending through nested broadcasts") {
+    ashiato::Registry registry;
+    ashiato::RegistryDirtyFrameBroadcaster broadcaster;
+    CountingDirtyFrameListener counting_listener;
+    std::vector<ashiato::RegistryDirtyFrameBroadcastSubscription> subscriptions;
+    NestedBroadcastListener nested_listener;
+    nested_listener.broadcaster = &broadcaster;
+    nested_listener.target = &counting_listener;
+    nested_listener.subscriptions = &subscriptions;
+
+    subscriptions.push_back(broadcaster.subscribe(nested_listener));
+    broadcaster.broadcast(registry);
+    REQUIRE(counting_listener.calls == 0);
+
+    broadcaster.broadcast(registry);
+    REQUIRE(counting_listener.calls == 1);
+}
+
+TEST_CASE("dirty frame subscriptions are inserted after a listener throws") {
+    ashiato::Registry registry;
+    ashiato::RegistryDirtyFrameBroadcaster broadcaster;
+    CountingDirtyFrameListener counting_listener;
+    std::vector<ashiato::RegistryDirtyFrameBroadcastSubscription> subscriptions;
+    ThrowingSubscribingDirtyFrameListener throwing_listener;
+    throwing_listener.broadcaster = &broadcaster;
+    throwing_listener.target = &counting_listener;
+    throwing_listener.subscriptions = &subscriptions;
+
+    subscriptions.push_back(broadcaster.subscribe(throwing_listener));
+    REQUIRE_THROWS_AS(broadcaster.broadcast(registry), std::runtime_error);
+    REQUIRE(counting_listener.calls == 0);
+
+    broadcaster.broadcast(registry);
+    REQUIRE(counting_listener.calls == 1);
 }
 
 TEST_CASE("persistent delta snapshots handle values and tombstones separately from serialization") {

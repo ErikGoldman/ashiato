@@ -161,14 +161,13 @@ Registry::ComponentLifecycleHookSubscription Registry::subscribe_component_lifec
         ComponentLifecycleHookList& hook_list = found->second;
         std::vector<ComponentLifecycleHookEntry>& hook_entries = add_hook ? hook_list.add : hook_list.remove;
         const std::size_t old_size = hook_entries.size();
-        hook_entries.erase(
-            std::remove_if(
-                hook_entries.begin(),
-                hook_entries.end(),
-                [&](const ComponentLifecycleHookEntry& entry) {
-                    return entry.id == id;
-                }),
-            hook_entries.end());
+        const auto new_end = std::remove_if(
+            hook_entries.begin(),
+            hook_entries.end(),
+            [&](const ComponentLifecycleHookEntry& entry) {
+                return entry.id == id;
+            });
+        hook_entries.erase(new_end, hook_entries.end());
         if (hook_entries.size() == old_size) {
             return;
         }
@@ -189,14 +188,13 @@ void Registry::unsubscribe_component_lifecycle_hook(std::uint32_t component, boo
     ComponentLifecycleHookList& list = found->second;
     std::vector<ComponentLifecycleHookEntry>& target = add_hook ? list.add : list.remove;
     const std::size_t old_size = target.size();
-    target.erase(
-        std::remove_if(
-            target.begin(),
-            target.end(),
-            [&](const ComponentLifecycleHookEntry& entry) {
-                return entry.id == id;
-            }),
-        target.end());
+    const auto new_end = std::remove_if(
+        target.begin(),
+        target.end(),
+        [&](const ComponentLifecycleHookEntry& entry) {
+            return entry.id == id;
+        });
+    target.erase(new_end, target.end());
     if (target.size() == old_size) {
         return;
     }
@@ -265,6 +263,7 @@ void Registry::dispatch_component_remove_hooks(Entity component, Entity entity) 
 
 bool Registry::add_tag(Entity entity, Entity tag) {
     require_runtime_registry_access_allowed("add_tag");
+    require_runtime_structural_target_allowed(entity, "add_tag");
     return add_tag_impl<true>(entity, tag);
 }
 
@@ -293,11 +292,13 @@ bool Registry::add_tag_impl(Entity entity, Entity tag) {
 
 bool Registry::remove_tag(Entity entity, Entity tag) {
     require_runtime_registry_access_allowed("remove_tag");
+    require_runtime_structural_target_allowed(entity, "remove_tag");
     return remove_component<true>(entity, tag);
 }
 
 void* Registry::add(Entity entity, Entity component, const void* value) {
     require_runtime_registry_access_allowed("add");
+    require_runtime_structural_target_allowed(entity, "add");
     return add_component_bytes<true>(entity, component, value);
 }
 
@@ -574,6 +575,7 @@ std::optional<JobInfo> Registry::job_info(Entity job) const {
     info.name = record.name;
     info.order = record.order;
     info.structural = record.structural;
+    info.structural_any = record.structural_any;
     info.single_thread = record.single_thread;
     info.max_threads = record.max_threads;
     info.min_entities_per_thread = record.min_entities_per_thread;
@@ -1158,7 +1160,8 @@ Entity Registry::add_job(
     std::function<void(Registry&, const std::vector<std::uint32_t>&, std::size_t, std::size_t)> run_range,
     std::vector<std::uint32_t> range_dirty_writes,
     JobThreadingOptions threading,
-    bool structural) {
+    bool structural,
+    bool structural_any) {
     canonicalize_job_metadata(metadata);
     for (std::uint32_t component : metadata.dependency_writes) {
         const auto found = component_catalog_.records.find(component);
@@ -1194,7 +1197,8 @@ Entity Registry::add_job(
         std::max<std::size_t>(threading.max_threads, 1),
         std::max<std::size_t>(threading.min_entities_per_thread, 1),
         threading.single_thread,
-        structural});
+        structural,
+        structural_any});
     return entity;
 }
 

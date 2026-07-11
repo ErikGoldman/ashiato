@@ -298,6 +298,26 @@ TEST_CASE("view iteration tolerates removing driver components from current enti
     }
 }
 
+TEST_CASE(
+    "view iteration does not access dense slots removed by the current callback",
+    "[!mayfail][known-bug][view-mutation]") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+
+    const ashiato::Entity first = registry.create();
+    const ashiato::Entity second = registry.create();
+    REQUIRE(registry.add<Position>(first, Position{1, 0}) != nullptr);
+    REQUIRE(registry.add<Position>(second, Position{2, 0}) != nullptr);
+
+    std::vector<ashiato::Entity> visited;
+    registry.view<Position>().each([&](ashiato::Entity entity, Position&) {
+        visited.push_back(entity);
+        REQUIRE(registry.remove<Position>(entity));
+    });
+
+    REQUIRE(visited == std::vector<ashiato::Entity>{first, second});
+}
+
 TEST_CASE("view iteration tolerates later entities losing driver components") {
     ashiato::Registry registry;
     registry.register_component<Position>("Position");

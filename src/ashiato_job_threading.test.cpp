@@ -4,6 +4,27 @@
 
 #include <thread>
 
+namespace {
+
+template <typename Context, typename = void>
+struct HasCurrentStructuralAdd : std::false_type {};
+
+template <typename Context>
+struct HasCurrentStructuralAdd<
+    Context,
+    std::void_t<decltype(std::declval<Context&>().template add<Disabled>())>> : std::true_type {};
+
+template <typename Context, typename = void>
+struct HasTargetedStructuralAdd : std::false_type {};
+
+template <typename Context>
+struct HasTargetedStructuralAdd<
+    Context,
+    std::void_t<decltype(std::declval<Context&>().template add<Disabled>(std::declval<ashiato::Entity>()))>>
+    : std::true_type {};
+
+}  // namespace
+
 TEST_CASE("run jobs batches independent jobs through the executor") {
     ashiato::Registry registry;
     registry.register_component<Position>("Position");
@@ -334,8 +355,8 @@ TEST_CASE("structural jobs expose declared add and remove operations and stay si
     REQUIRE(registry.add<Position>(entity, Position{1, 0}) != nullptr);
 
     registry.job<const Position>(0).max_threads(4).min_entities_per_thread(1).structural<Disabled>().each(
-        [](auto& view, ashiato::Entity current, const Position&) {
-            REQUIRE(view.template add<Disabled>(current));
+        [](auto& view, ashiato::Entity, const Position&) {
+            REQUIRE(view.template add<Disabled>());
         });
 
     std::vector<std::size_t> batch_sizes;
@@ -352,13 +373,317 @@ TEST_CASE("structural jobs expose declared add and remove operations and stay si
     REQUIRE(batch_sizes == std::vector<std::size_t>{1});
     REQUIRE(registry.has<Disabled>(entity));
 
-    registry.job<const Position>(1).structural<Disabled>().each([](auto& view, ashiato::Entity current, const Position&) {
-        REQUIRE(view.template remove<Disabled>(current));
+    registry.job<const Position>(1).structural<Disabled>().each([](auto& view, ashiato::Entity, const Position&) {
+        REQUIRE(view.template remove<Disabled>());
     });
 
     registry.run_jobs();
 
     REQUIRE_FALSE(registry.has<Disabled>(entity));
+}
+
+TEST_CASE("structural contexts only expose current-entity structural operations") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+    registry.register_component<Disabled>("Disabled");
+
+    const ashiato::Entity entity = registry.create();
+    REQUIRE(registry.add<Position>(entity, Position{1, 0}) != nullptr);
+
+    const ashiato::Entity job = registry.job<const Position>(0).structural<Disabled>().each(
+        [](auto& context, ashiato::Entity, const Position&) {
+            using Context = typename std::remove_reference<decltype(context)>::type;
+            STATIC_REQUIRE(HasCurrentStructuralAdd<Context>::value);
+            STATIC_REQUIRE_FALSE(HasTargetedStructuralAdd<Context>::value);
+            REQUIRE(context.template add<Disabled>());
+        });
+
+    REQUIRE(registry.job_info(job)->structural);
+    REQUIRE_FALSE(registry.job_info(job)->structural_any);
+
+    registry.run_jobs();
+    REQUIRE(registry.has<Disabled>(entity));
+}
+
+TEST_CASE("structural_any contexts expose targeted rather than implicit structural operations") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+    registry.register_component<Disabled>("Disabled");
+
+    const ashiato::Entity entity = registry.create();
+    REQUIRE(registry.add<Position>(entity, Position{1, 0}) != nullptr);
+
+    const ashiato::Entity job = registry.job<const Position>(0).structural_any<Disabled>().each(
+        [](auto& context, ashiato::Entity current, const Position&) {
+            using Context = typename std::remove_reference<decltype(context)>::type;
+            STATIC_REQUIRE_FALSE(HasCurrentStructuralAdd<Context>::value);
+            STATIC_REQUIRE(HasTargetedStructuralAdd<Context>::value);
+            REQUIRE(context.template add<Disabled>(current));
+        });
+
+    REQUIRE(registry.job_info(job)->structural);
+    REQUIRE(registry.job_info(job)->structural_any);
+
+    registry.run_jobs();
+    REQUIRE(registry.has<Disabled>(entity));
+}
+
+#if ASHIATO_RUNTIME_REGISTRY_ACCESS_CHECKING
+TEST_CASE("structural runtime checking also constrains mutations made by lifecycle hooks") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+    registry.register_component<Disabled>("Disabled");
+    registry.register_component<Active>("Active");
+
+    const ashiato::Entity current = registry.create();
+    const ashiato::Entity other = registry.create();
+    REQUIRE(registry.add<Position>(current, Position{}) != nullptr);
+
+    auto subscription = registry.on_component_add<Disabled>(
+        [&](ashiato::Registry& hooked_registry, ashiato::Entity) {
+            hooked_registry.add<Active>(other);
+        });
+    REQUIRE(subscription.active());
+
+    registry.job<const Position>(0).structural<Disabled>().each(
+        [](auto& context, ashiato::Entity, const Position&) {
+            (void)context.template add<Disabled>();
+        });
+
+    REQUIRE_THROWS_AS(registry.run_jobs(), std::logic_error);
+    REQUIRE_FALSE(registry.has<Active>(other));
+}
+#endif
+
+TEST_CASE("all direct job iteration runs in reverse dense order") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+
+    std::vector<ashiato::Entity> entities;
+    for (int value = 0; value < 4; ++value) {
+        const ashiato::Entity entity = registry.create();
+        REQUIRE(registry.add<Position>(entity, Position{value, 0}) != nullptr);
+        entities.push_back(entity);
+    }
+
+    std::vector<ashiato::Entity> visited;
+    registry.job<const Position>(0).each(
+        [&](ashiato::Entity entity, const Position&) { visited.push_back(entity); });
+
+    registry.run_jobs();
+    REQUIRE(visited == std::vector<ashiato::Entity>{entities[3], entities[2], entities[1], entities[0]});
+}
+
+TEST_CASE("structural jobs remove the current entity from owned groups without skips or duplicates") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+    registry.register_component<Velocity>("Velocity");
+    registry.declare_owned_group<Position, Velocity>();
+
+    std::vector<ashiato::Entity> entities;
+    for (int value = 0; value < 4; ++value) {
+        const ashiato::Entity entity = registry.create();
+        REQUIRE(registry.add<Position>(entity, Position{value, 0}) != nullptr);
+        REQUIRE(registry.add<Velocity>(entity, Velocity{}) != nullptr);
+        entities.push_back(entity);
+    }
+
+    std::vector<ashiato::Entity> visited;
+    registry.job<const Position, const Velocity>(0).structural<Velocity>().each(
+        [&](auto& context, ashiato::Entity entity, const Position&, const Velocity&) {
+            visited.push_back(entity);
+            REQUIRE(context.template remove<Velocity>());
+        });
+
+    registry.run_jobs();
+
+    REQUIRE(visited == std::vector<ashiato::Entity>{entities[3], entities[2], entities[1], entities[0]});
+    for (ashiato::Entity entity : entities) {
+        REQUIRE_FALSE(registry.contains<Velocity>(entity));
+    }
+}
+
+TEST_CASE("structural jobs defer current-entity owned-group entry until reverse iteration completes") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+    registry.register_component<Velocity>("Velocity");
+    registry.declare_owned_group<Position, Velocity>();
+
+    std::vector<ashiato::Entity> entities;
+    for (int value = 0; value < 4; ++value) {
+        const ashiato::Entity entity = registry.create();
+        REQUIRE(registry.add<Position>(entity, Position{value, 0}) != nullptr);
+        if (value < 2) {
+            REQUIRE(registry.add<Velocity>(entity, Velocity{}) != nullptr);
+        }
+        entities.push_back(entity);
+    }
+
+    std::vector<ashiato::Entity> visited;
+    registry.job<const Position>(0).structural<Velocity>().each(
+        [&](auto& context, ashiato::Entity entity, const Position&) {
+            visited.push_back(entity);
+            if (entity == entities[2] || entity == entities[3]) {
+                REQUIRE(context.template add<Velocity>(Velocity{}) != nullptr);
+            }
+        });
+
+    registry.run_jobs();
+
+    REQUIRE(visited == std::vector<ashiato::Entity>{entities[3], entities[2], entities[1], entities[0]});
+    std::vector<ashiato::Entity> grouped;
+    registry.view<const Position, const Velocity>().each(
+        [&](ashiato::Entity entity, const Position&, const Velocity&) { grouped.push_back(entity); });
+    std::sort(grouped.begin(), grouped.end(), [](ashiato::Entity lhs, ashiato::Entity rhs) {
+        return lhs.value < rhs.value;
+    });
+    REQUIRE(grouped == entities);
+}
+
+TEST_CASE("structural_any snapshots versioned matches before arbitrary group reordering") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+    registry.register_component<Velocity>("Velocity");
+    registry.declare_owned_group<Position, Velocity>();
+
+    std::vector<ashiato::Entity> entities;
+    for (int value = 0; value < 4; ++value) {
+        const ashiato::Entity entity = registry.create();
+        REQUIRE(registry.add<Position>(entity, Position{value, 0}) != nullptr);
+        REQUIRE(registry.add<Velocity>(entity, Velocity{}) != nullptr);
+        entities.push_back(entity);
+    }
+
+    std::vector<ashiato::Entity> visited;
+    registry.job<const Position>(0).structural_any<Velocity>().each(
+        [&](auto& context, ashiato::Entity entity, const Position&) {
+            visited.push_back(entity);
+            if (entity == entities.front()) {
+                REQUIRE(context.template remove<Velocity>(entities[2]));
+            }
+        });
+
+    registry.run_jobs();
+
+    REQUIRE(visited == entities);
+    REQUIRE_FALSE(registry.contains<Velocity>(entities[2]));
+}
+
+TEST_CASE("structural_any revalidates snapshot entries that stop matching") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+    registry.register_component<Velocity>("Velocity");
+
+    std::vector<ashiato::Entity> entities;
+    for (int value = 0; value < 4; ++value) {
+        const ashiato::Entity entity = registry.create();
+        REQUIRE(registry.add<Position>(entity, Position{value, 0}) != nullptr);
+        REQUIRE(registry.add<Velocity>(entity, Velocity{}) != nullptr);
+        entities.push_back(entity);
+    }
+
+    std::vector<ashiato::Entity> visited;
+    registry.job<const Position, const Velocity>(0).structural_any<Velocity>().each(
+        [&](auto& context, ashiato::Entity entity, const Position&, const Velocity&) {
+            visited.push_back(entity);
+            if (entity == entities.front()) {
+                REQUIRE(context.template remove<Velocity>(entities[2]));
+            }
+        });
+
+    registry.run_jobs();
+    REQUIRE(visited == std::vector<ashiato::Entity>{entities[0], entities[1], entities[3]});
+}
+
+TEST_CASE("structural_any snapshots entity versions and skips replacements that reuse an index") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+    registry.register_component<Disabled>("Disabled");
+
+    std::vector<ashiato::Entity> entities;
+    for (int value = 0; value < 4; ++value) {
+        const ashiato::Entity entity = registry.create();
+        REQUIRE(registry.add<Position>(entity, Position{value, 0}) != nullptr);
+        entities.push_back(entity);
+    }
+
+    ashiato::Entity replacement;
+    auto subscription = registry.on_component_add<Disabled>(
+        [&](ashiato::Registry& hooked_registry, ashiato::Entity) {
+            REQUIRE(hooked_registry.destroy(entities[2]));
+            replacement = hooked_registry.create();
+            REQUIRE(ashiato::Registry::entity_index(replacement) == ashiato::Registry::entity_index(entities[2]));
+            REQUIRE(replacement != entities[2]);
+            REQUIRE(hooked_registry.add<Position>(replacement, Position{99, 0}) != nullptr);
+        });
+    REQUIRE(subscription.active());
+
+    std::vector<ashiato::Entity> visited;
+    registry.job<const Position>(0).structural_any<Disabled>().each(
+        [&](auto& context, ashiato::Entity entity, const Position&) {
+            visited.push_back(entity);
+            if (entity == entities.front()) {
+                REQUIRE(context.template add<Disabled>(entity));
+            }
+        });
+
+    registry.run_jobs();
+
+    REQUIRE(visited == std::vector<ashiato::Entity>{entities[0], entities[1], entities[3]});
+    REQUIRE(replacement);
+    REQUIRE(std::find(visited.begin(), visited.end(), replacement) == visited.end());
+}
+
+TEST_CASE("structural_any composes with external access and tag filters") {
+    SECTION("external access") {
+        ashiato::Registry registry;
+        registry.register_component<Position>("Position");
+        registry.register_component<Velocity>("Velocity");
+        registry.register_component<Disabled>("Disabled");
+
+        const ashiato::Entity first = registry.create();
+        const ashiato::Entity second = registry.create();
+        REQUIRE(registry.add<Position>(first, Position{}) != nullptr);
+        REQUIRE(registry.add<Position>(second, Position{}) != nullptr);
+        REQUIRE(registry.add<Velocity>(first, Velocity{}) != nullptr);
+        REQUIRE(registry.add<Velocity>(second, Velocity{}) != nullptr);
+
+        registry.job<const Position>(0)
+            .access_other_entities<Velocity>()
+            .structural_any<Disabled>()
+            .each([&](auto& context, ashiato::Entity current, const Position&) {
+                context.template write<Velocity>(current).dx += 1.0f;
+                if (current == first) {
+                    REQUIRE(context.template add<Disabled>(second));
+                }
+            });
+
+        registry.run_jobs();
+        REQUIRE(registry.has<Disabled>(second));
+        REQUIRE(registry.get<Velocity>(first).dx == 1.0f);
+        REQUIRE(registry.get<Velocity>(second).dx == 1.0f);
+    }
+
+    SECTION("tag filters") {
+        ashiato::Registry registry;
+        registry.register_component<Position>("Position");
+        registry.register_component<Active>("Active");
+        registry.register_component<Disabled>("Disabled");
+
+        const ashiato::Entity entity = registry.create();
+        REQUIRE(registry.add<Position>(entity, Position{}) != nullptr);
+        REQUIRE(registry.add<Active>(entity));
+
+        registry.job<const Position>(0)
+            .with_tags<const Active>()
+            .structural_any<Disabled>()
+            .each([](auto& context, ashiato::Entity current, const Position&) {
+                REQUIRE(context.template add<Disabled>(current));
+            });
+
+        registry.run_jobs();
+        REQUIRE(registry.has<Disabled>(entity));
+    }
 }
 
 TEST_CASE("structural jobs dispatch matching lifecycle hooks") {
@@ -387,12 +712,12 @@ TEST_CASE("structural jobs dispatch matching lifecycle hooks") {
     REQUIRE(remove_subscription.active());
 
     registry.job<const Position>(0).structural<Disabled>().each(
-        [](auto& view, ashiato::Entity current, const Position&) {
-            REQUIRE(view.template add<Disabled>(current));
+        [](auto& view, ashiato::Entity, const Position&) {
+            REQUIRE(view.template add<Disabled>());
         });
     registry.job<const Position>(1).structural<Disabled>().each(
-        [](auto& view, ashiato::Entity current, const Position&) {
-            REQUIRE(view.template remove<Disabled>(current));
+        [](auto& view, ashiato::Entity, const Position&) {
+            REQUIRE(view.template remove<Disabled>());
         });
 
     registry.run_jobs();
@@ -458,7 +783,7 @@ TEST_CASE("structural access jobs can use access views and declared structural o
         [](auto& view, ashiato::Entity current, const Position& position) {
             Velocity& velocity = view.template write<Velocity>(current);
             velocity.dx += static_cast<float>(position.x);
-            REQUIRE(view.template add<Disabled>(current));
+            REQUIRE(view.template add<Disabled>());
         });
 
     registry.run_jobs();

@@ -131,7 +131,11 @@ void Registry::refresh_group_after_add(std::uint32_t index, std::uint32_t compon
     }
     GroupRecord& group = *found->second;
     if (group_contains_all(group, index)) {
-        enter_group(group, index);
+        if (group_index_.defer_enters_depth != 0) {
+            group_index_.deferred_enters.emplace_back(&group, index);
+        } else {
+            enter_group(group, index);
+        }
     }
 }
 
@@ -141,6 +145,32 @@ void Registry::remove_from_groups_before_component_removal(std::uint32_t index, 
         return;
     }
     leave_group(*found->second, index);
+}
+
+void Registry::begin_deferred_group_enters() {
+    if (group_index_.defer_enters_depth++ == 0 && !group_index_.groups.empty()) {
+        bump_view_topology_token();
+    }
+}
+
+void Registry::end_deferred_group_enters() {
+    assert(group_index_.defer_enters_depth != 0);
+    --group_index_.defer_enters_depth;
+    if (group_index_.defer_enters_depth != 0) {
+        return;
+    }
+
+    std::vector<std::pair<GroupRecord*, std::uint32_t>> pending = std::move(group_index_.deferred_enters);
+    group_index_.deferred_enters.clear();
+    for (const auto& entry : pending) {
+        GroupRecord& group = *entry.first;
+        if (group_contains_all(group, entry.second)) {
+            enter_group(group, entry.second);
+        }
+    }
+    if (!group_index_.groups.empty()) {
+        bump_view_topology_token();
+    }
 }
 
 }  // namespace ashiato

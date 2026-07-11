@@ -216,15 +216,27 @@ registry.run_jobs();
 registry.run_jobs(ashiato::RunJobsOptions{true}); // force serial execution
 ```
 
-Structural changes from a job must be declared explicitly. Declaring structural access keeps that job single-threaded and isolates it in the orchestrator schedule because add/remove operations mutate registry bookkeeping.
+Structural changes from a job must be declared explicitly. Both structural modes keep the job single-threaded and isolate it in the orchestrator schedule because add/remove operations mutate registry bookkeeping. `structural<T...>()` is the fast path: it iterates in reverse and its context can only add or remove the declared components on the entity currently being iterated.
 
 ```cpp
 registry.job<const Position>(0)
     .structural<Disabled>()
-    .each([](auto& job, ashiato::Entity entity, const Position&) {
-        job.template add<Disabled>(entity);
+    .each([](auto& job, ashiato::Entity, const Position&) {
+        job.template add<Disabled>();
     });
 ```
+
+Use `structural_any<T...>()` when a callback must structurally modify another entity. It snapshots full entity handles before invoking callbacks and revalidates each handle and the job's filters before processing it.
+
+```cpp
+registry.job<const Position>(0)
+    .structural_any<Disabled>()
+    .each([target](auto& job, ashiato::Entity, const Position&) {
+        job.template add<Disabled>(target);
+    });
+```
+
+Direct job iteration is in reverse dense order. Treat job iteration order as unspecified; use explicit ordering data when callback order is meaningful.
 
 `Orchestrator` can inspect registered jobs and return the order in which they can be processed. `run_jobs()` uses this schedule unless forced into single-threaded mode. Each stage contains jobs that can run in parallel, and stages must be processed in order.
 
@@ -360,8 +372,10 @@ std::string text = registry.debug_print(entity, position_type);
 - `Registry::JobView<Components...>& Registry::JobView<Components...>::single_thread()`
 - `Registry::JobView<Components...>& Registry::JobView<Components...>::min_entities_per_thread(std::size_t count)`
 - `Registry::JobStructuralView<...> Registry::JobView<Components...>::structural<StructuralComponents...>()`
+- `Registry::JobStructuralView<...> Registry::JobView<Components...>::structural_any<StructuralComponents...>()`
 - `Registry::JobAccessView<...>& Registry::JobAccessView<...>::max_threads(std::size_t count)`
 - `Registry::JobStructuralAccessView<...> Registry::JobAccessView<...>::structural<StructuralComponents...>()`
+- `Registry::JobStructuralAccessView<...> Registry::JobAccessView<...>::structural_any<StructuralComponents...>()`
 - `ashiato::Orchestrator::Orchestrator(const Registry& registry)`
 - `ashiato::JobSchedule ashiato::Orchestrator::schedule() const`
 - `std::vector<ashiato::JobScheduleStage> ashiato::JobSchedule::stages`
