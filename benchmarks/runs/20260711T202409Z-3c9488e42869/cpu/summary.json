@@ -1,0 +1,146 @@
+[
+  {
+    "name": "BM_IterateSparseTwoComponentView/16384/10",
+    "real_time": 12664.463164439294,
+    "cpu_time": 12656.650961410365,
+    "time_unit": "ns",
+    "items_per_second": 129497131.98201066,
+    "bytes_per_second": null,
+    "iterations": 22519
+  },
+  {
+    "name": "BM_AddRemoveComponents/16384",
+    "real_time": 1475089.93717271,
+    "cpu_time": 1475037.0994764399,
+    "time_unit": "ns",
+    "items_per_second": 22215034.463628683,
+    "bytes_per_second": null,
+    "iterations": 191
+  },
+  {
+    "name": "BM_IterateEightComponents/16384",
+    "real_time": 1360865.9615384701,
+    "cpu_time": 1359914.7403846155,
+    "time_unit": "ns",
+    "items_per_second": 12047814.111762792,
+    "bytes_per_second": null,
+    "iterations": 208
+  },
+  {
+    "name": "BM_IterateEightComponentsOwnedGroupView/16384",
+    "real_time": 446884.61674718984,
+    "cpu_time": 446787.29468599055,
+    "time_unit": "ns",
+    "items_per_second": 36670693.627299644,
+    "bytes_per_second": null,
+    "iterations": 621
+  },
+  {
+    "name": "BM_IterateWriteOwnedGroupViewEightComponents/16384",
+    "real_time": 820658.3556851312,
+    "cpu_time": 820624.1253644308,
+    "time_unit": "ns",
+    "items_per_second": 159722333.22020876,
+    "bytes_per_second": null,
+    "iterations": 343
+  },
+  {
+    "name": "BM_AccessViewReadWrite/16384",
+    "real_time": 113493.89064398615,
+    "cpu_time": 113413.59092750106,
+    "time_unit": "ns",
+    "items_per_second": 144462404.07354152,
+    "bytes_per_second": null,
+    "iterations": 2469
+  },
+  {
+    "name": "BM_GroupMaintenanceAddRemove/16384",
+    "real_time": 3009645.3749999995,
+    "cpu_time": 3009399.7812500005,
+    "time_unit": "ns",
+    "items_per_second": 10888550.00394441,
+    "bytes_per_second": null,
+    "iterations": 96
+  },
+  {
+    "name": "BM_Snapshot/16384",
+    "real_time": 837404.570743401,
+    "cpu_time": 836427.9256594727,
+    "time_unit": "ns",
+    "items_per_second": 156704476.23644042,
+    "bytes_per_second": null,
+    "iterations": 417
+  },
+  {
+    "name": "BM_DeltaSnapshotDirtyValues/16384",
+    "real_time": 57174.98254161531,
+    "cpu_time": 57164.99634591962,
+    "time_unit": "ns",
+    "items_per_second": 35826119.669579655,
+    "bytes_per_second": null,
+    "iterations": 4926
+  },
+  {
+    "name": "BM_DeltaSnapshotStructuralChanges/16384",
+    "real_time": 61330.03541938181,
+    "cpu_time": 61329.94046066933,
+    "time_unit": "ns",
+    "items_per_second": 16696575.804711364,
+    "bytes_per_second": null,
+    "iterations": 4602
+  },
+  {
+    "name": "BM_DeltaSnapshotRestoreStructuralChanges/16384",
+    "real_time": 244974.3013939133,
+    "cpu_time": 244897.90243901804,
+    "time_unit": "ns",
+    "items_per_second": 4181334.302179195,
+    "bytes_per_second": null,
+    "iterations": 1148
+  },
+  {
+    "name": "BM_RuntimeEnsureExistingWriteRead/16384",
+    "real_time": 558500.6460000273,
+    "cpu_time": 558473.8700000002,
+    "time_unit": "ns",
+    "items_per_second": 88011279.73990972,
+    "bytes_per_second": null,
+    "iterations": 500
+  },
+  {
+    "name": "BM_JobScheduleReadOnly/256",
+    "real_time": 131.42592879235474,
+    "cpu_time": 131.32522437079055,
+    "time_unit": "ns",
+    "items_per_second": 1949358938.6696658,
+    "bytes_per_second": null,
+    "iterations": 2131962
+  },
+  {
+    "name": "BM_RunJobsSingleThread/16384",
+    "real_time": 430332.35637481365,
+    "cpu_time": 430310.5960061438,
+    "time_unit": "ns",
+    "items_per_second": 152299294.0640121,
+    "bytes_per_second": null,
+    "iterations": 651
+  },
+  {
+    "name": "BM_RunJobsParallelThreadPool/16384",
+    "real_time": 765741.2287334469,
+    "cpu_time": 525555.0302457472,
+    "time_unit": "ns",
+    "items_per_second": 124698644.72490285,
+    "bytes_per_second": null,
+    "iterations": 529
+  },
+  {
+    "name": "BM_RunJobsParallelOverlappingWritesThreadPool/16384",
+    "real_time": 633266.9651346947,
+    "cpu_time": 443850.0380348653,
+    "time_unit": "ns",
+    "items_per_second": 147653473.8853667,
+    "bytes_per_second": null,
+    "iterations": 631
+  }
+]
