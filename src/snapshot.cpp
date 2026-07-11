@@ -1120,7 +1120,8 @@ void DirtySnapshotTracker::on_registry_dirty_frame(const RegistryDirtyFrame& fra
             &frame.registry,
             DirtySnapshotFrameKind::Full,
             snapshot.get(),
-            nullptr});
+            nullptr,
+            &options_.component_options});
         last_full_ = std::move(snapshot);
         last_delta_.reset();
         return;
@@ -1133,7 +1134,8 @@ void DirtySnapshotTracker::on_registry_dirty_frame(const RegistryDirtyFrame& fra
         &frame.registry,
         DirtySnapshotFrameKind::Delta,
         nullptr,
-        delta.get()});
+        delta.get(),
+        &options_.component_options});
     last_delta_ = std::move(delta);
 }
 

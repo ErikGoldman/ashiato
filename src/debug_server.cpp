@@ -63,16 +63,28 @@ bool parse_ipv4_address(const std::string& value, in_addr& out) {
 }
 
 std::string json_escape(const std::string& value) {
+    static constexpr char hex_digits[] = "0123456789abcdef";
     std::string out;
     out.reserve(value.size() + 2);
     for (char ch : value) {
         switch (ch) {
         case '"': out += "\\\""; break;
         case '\\': out += "\\\\"; break;
+        case '\b': out += "\\b"; break;
+        case '\f': out += "\\f"; break;
         case '\n': out += "\\n"; break;
         case '\r': out += "\\r"; break;
         case '\t': out += "\\t"; break;
-        default: out += ch; break;
+        default:
+            const unsigned char byte = static_cast<unsigned char>(ch);
+            if (byte < 0x20U) {
+                out += "\\u00";
+                out += hex_digits[byte >> 4U];
+                out += hex_digits[byte & 0x0fU];
+            } else {
+                out += ch;
+            }
+            break;
         }
     }
     return out;

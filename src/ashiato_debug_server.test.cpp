@@ -172,6 +172,13 @@ TEST_CASE("debug server responds to a loopback GraphQL request") {
     registry.write<GameTime>().tick = 42;
     const ashiato::Entity entity = registry.create();
     REQUIRE(registry.add<Position>(entity, Position{5, 6}) != nullptr);
+    std::string control_name = "Control";
+    control_name.push_back('\x01');
+    control_name.push_back('\b');
+    control_name.push_back('\f');
+    control_name.push_back('\x1f');
+    const ashiato::Entity control_tag = registry.register_tag(control_name);
+    REQUIRE(registry.add_tag(entity, control_tag));
     const ashiato::Entity move_job = registry.job<const Position>(3).name("Move debug").each(
         [](ashiato::Entity, const Position&) {});
 
@@ -199,6 +206,8 @@ TEST_CASE("debug server responds to a loopback GraphQL request") {
     REQUIRE(response.find("\"name\":\"name\"") != std::string::npos);
     REQUIRE(response.find("\"type\":\"string\"") != std::string::npos);
     REQUIRE(response.find("\"value\":\"ball\"") != std::string::npos);
+    REQUIRE(response.find("\"name\":\"Control\\u0001\\b\\f\\u001f\"") != std::string::npos);
+    REQUIRE(response.find(control_name) == std::string::npos);
 
     const std::string duplicated_entities_response =
         post_graphql(server, "{\"query\":\"query { entities { id index version kind displayName } }\"}");

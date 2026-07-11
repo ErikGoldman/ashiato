@@ -771,6 +771,28 @@ void BM_AddRemoveEntities(benchmark::State& state) {
     state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(entity_count) * 2);
 }
 
+void BM_ComponentTombstoneRemoveReadd(benchmark::State& state) {
+    const int entity_count = static_cast<int>(state.range(0));
+    ashiato::Registry registry;
+    registry.register_component<C0>("C0");
+    const std::vector<ashiato::Entity> entities = create_entities(registry, entity_count);
+    for (std::size_t i = 0; i < entities.size(); ++i) {
+        registry.add<C0>(entities[i], C0{static_cast<std::int64_t>(i)});
+    }
+    registry.clear_all_dirty<C0>();
+
+    for (auto _ : state) {
+        for (ashiato::Entity entity : entities) {
+            benchmark::DoNotOptimize(registry.remove<C0>(entity));
+        }
+        for (std::size_t i = 0; i < entities.size(); ++i) {
+            benchmark::DoNotOptimize(registry.add<C0>(entities[i], C0{static_cast<std::int64_t>(i)}));
+        }
+    }
+
+    state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(entity_count) * 2);
+}
+
 void BM_Snapshot(benchmark::State& state) {
     const int entity_count = static_cast<int>(state.range(0));
     ashiato::Registry registry;
@@ -1186,6 +1208,7 @@ BENCHMARK(BM_TypedTagFilteredView)->Apply(BasicOperationArgs);
 BENCHMARK(BM_RuntimeTagFilteredView)->Apply(BasicOperationArgs);
 BENCHMARK(BM_GroupMaintenanceAddRemove)->Apply(BasicOperationArgs);
 BENCHMARK(BM_AddRemoveEntities)->Apply(BasicOperationArgs);
+BENCHMARK(BM_ComponentTombstoneRemoveReadd)->Apply(BasicOperationArgs);
 BENCHMARK(BM_Snapshot)->Apply(BasicOperationArgs);
 BENCHMARK(BM_DeltaSnapshotDirtyValues)->Apply(BasicOperationArgs);
 BENCHMARK(BM_DeltaSnapshotStructuralChanges)->Apply(BasicOperationArgs);

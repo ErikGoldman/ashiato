@@ -730,9 +730,13 @@ TEST_CASE("dirty snapshot tracker owns full and delta baseline cadence") {
     std::vector<ashiato::DirtySnapshotFrameKind> frames;
     ashiato::DirtySnapshotTrackerOptions options;
     options.full_snapshot_interval_dirty_frames = 3;
+    const ashiato::Entity included_component = registry.component<Position>();
+    options.component_options.include_components.push_back(included_component);
     options.write = [&](const ashiato::DirtySnapshotFrame& frame) {
         frames.push_back(frame.kind);
         REQUIRE(frame.registry == &registry);
+        REQUIRE(frame.component_options != nullptr);
+        REQUIRE(frame.component_options->include_components == std::vector<ashiato::Entity>{included_component});
         if (frame.kind == ashiato::DirtySnapshotFrameKind::Full) {
             REQUIRE(frame.full != nullptr);
             REQUIRE(frame.delta == nullptr);
@@ -761,6 +765,33 @@ TEST_CASE("dirty snapshot tracker owns full and delta baseline cadence") {
     REQUIRE(frames[0] == ashiato::DirtySnapshotFrameKind::Full);
     REQUIRE(frames[1] == ashiato::DirtySnapshotFrameKind::Delta);
     REQUIRE(frames[2] == ashiato::DirtySnapshotFrameKind::Full);
+}
+
+TEST_CASE(
+    "delta restore clears a baseline removal tombstone when the same entity generation is re-added",
+    "[!mayfail]") {
+    ashiato::Registry source;
+    source.register_component<Position>("Position");
+    const ashiato::Entity entity = source.create();
+    REQUIRE(source.add<Position>(entity, Position{1, 2}) != nullptr);
+    source.clear_all_dirty<Position>();
+    REQUIRE(source.remove<Position>(entity));
+    const auto baseline = source.create_snapshot();
+
+    REQUIRE(source.add<Position>(entity, Position{3, 4}) != nullptr);
+    const auto delta = source.create_delta_snapshot(baseline);
+
+    ashiato::Registry replay;
+    replay.register_component<Position>("Position");
+    replay.restore_snapshot(baseline);
+    replay.restore_delta_snapshot(delta);
+
+    std::vector<ashiato::Registry::ComponentRemoval> removals;
+    replay.each_removed<Position>([&](ashiato::Registry::ComponentRemoval removal) {
+        removals.push_back(removal);
+    });
+    REQUIRE(removals.empty());
+    REQUIRE(replay.get<Position>(entity).x == 3);
 }
 
 TEST_CASE("dirty frame listeners can subscribe during broadcast") {

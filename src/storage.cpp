@@ -16,6 +16,7 @@ Registry::TypeErasedStorage::TypeErasedStorage(const TypeErasedStorage& other)
       added_(other.added_),
       tombstones_(other.tombstone_count_ == 0 ? std::vector<unsigned char>{} : other.tombstones_),
       tombstone_indices_(other.tombstone_count_ == 0 ? std::vector<std::uint32_t>{} : other.tombstone_indices_),
+      tombstone_positions_(other.tombstone_count_ == 0 ? std::vector<std::uint32_t>{} : other.tombstone_positions_),
       tombstone_entities_(other.tombstone_count_ == 0 ? std::vector<std::uint64_t>{} : other.tombstone_entities_),
       dirty_count_(other.dirty_count_),
       added_count_(other.added_count_),
@@ -42,6 +43,7 @@ Registry::TypeErasedStorage::TypeErasedStorage(TypeErasedStorage&& other) noexce
       added_(std::move(other.added_)),
       tombstones_(std::move(other.tombstones_)),
       tombstone_indices_(std::move(other.tombstone_indices_)),
+      tombstone_positions_(std::move(other.tombstone_positions_)),
       tombstone_entities_(std::move(other.tombstone_entities_)),
       data_(other.data_),
       size_(other.size_),
@@ -73,6 +75,7 @@ Registry::TypeErasedStorage& Registry::TypeErasedStorage::operator=(TypeErasedSt
         tombstones_ = std::move(other.tombstones_);
         tombstone_entities_ = std::move(other.tombstone_entities_);
         tombstone_indices_ = std::move(other.tombstone_indices_);
+        tombstone_positions_ = std::move(other.tombstone_positions_);
         data_ = other.data_;
         size_ = other.size_;
         capacity_ = other.capacity_;
@@ -287,6 +290,7 @@ void Registry::TypeErasedStorage::clear_all_dirty() {
     std::fill(added_.begin(), added_.end(), std::uint8_t{0});
     std::fill(tombstones_.begin(), tombstones_.end(), no_tombstone);
     std::fill(tombstone_entities_.begin(), tombstone_entities_.end(), 0);
+    std::fill(tombstone_positions_.begin(), tombstone_positions_.end(), npos);
     tombstone_indices_.clear();
     dirty_count_ = 0;
     added_count_ = 0;
@@ -551,6 +555,9 @@ void Registry::TypeErasedStorage::ensure_sparse(std::uint32_t index) {
     if (index >= tombstone_entities_.size()) {
         tombstone_entities_.resize(static_cast<std::size_t>(index) + 1, 0);
     }
+    if (index >= tombstone_positions_.size()) {
+        tombstone_positions_.resize(static_cast<std::size_t>(index) + 1, npos);
+    }
 }
 
 bool Registry::TypeErasedStorage::contains(std::uint32_t index) const {
@@ -687,6 +694,7 @@ void Registry::TypeErasedStorage::clear() noexcept {
     std::fill(sparse_.begin(), sparse_.end(), npos);
     std::fill(tombstones_.begin(), tombstones_.end(), no_tombstone);
     std::fill(tombstone_entities_.begin(), tombstone_entities_.end(), 0);
+    std::fill(tombstone_positions_.begin(), tombstone_positions_.end(), npos);
     tombstone_indices_.clear();
     dirty_count_ = 0;
     added_count_ = 0;
@@ -701,6 +709,7 @@ void Registry::TypeErasedStorage::mark_tombstone(Entity entity, unsigned char fl
     }
     if (tombstones_[index] == no_tombstone && flags != no_tombstone) {
         ++tombstone_count_;
+        tombstone_positions_[index] = static_cast<std::uint32_t>(tombstone_indices_.size());
         tombstone_indices_.push_back(index);
     } else if (tombstones_[index] != no_tombstone && flags == no_tombstone) {
         --tombstone_count_;
@@ -789,10 +798,19 @@ void Registry::TypeErasedStorage::mark_dirty_or_defer(std::uint32_t index, std::
 }
 
 void Registry::TypeErasedStorage::erase_tombstone_index(std::uint32_t index) noexcept {
-    const auto found = std::find(tombstone_indices_.begin(), tombstone_indices_.end(), index);
-    if (found != tombstone_indices_.end()) {
-        tombstone_indices_.erase(found);
+    if (index >= tombstone_positions_.size()) {
+        return;
     }
+    const std::uint32_t position = tombstone_positions_[index];
+    if (position == npos || position >= tombstone_indices_.size()) {
+        return;
+    }
+
+    const std::uint32_t last_index = tombstone_indices_.back();
+    tombstone_indices_[position] = last_index;
+    tombstone_indices_.pop_back();
+    tombstone_positions_[last_index] = position;
+    tombstone_positions_[index] = npos;
 }
 
 std::unique_ptr<Registry::TypeErasedStorage> Registry::TypeErasedStorage::clone_compact_filtered(
@@ -923,6 +941,7 @@ void Registry::TypeErasedStorage::rebuild_lookup() {
     }
 
     sparse_.assign(lookup_size, npos);
+    tombstone_positions_.assign(lookup_size, npos);
     for (std::size_t dense = 0; dense < dense_indices_.size(); ++dense) {
         sparse_[dense_indices_[dense]] = static_cast<std::uint32_t>(dense);
     }
@@ -950,6 +969,9 @@ void Registry::TypeErasedStorage::rebuild_lookup() {
     }
     tombstones_ = std::move(rebuilt_tombstones);
     tombstone_entities_ = std::move(rebuilt_tombstone_entities);
+    for (std::size_t position = 0; position < tombstone_indices_.size(); ++position) {
+        tombstone_positions_[tombstone_indices_[position]] = static_cast<std::uint32_t>(position);
+    }
     compact_lookup_ = false;
 }
 

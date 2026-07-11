@@ -123,6 +123,53 @@ TEST_CASE("component registration rejects invalid field metadata") {
     REQUIRE_THROWS_AS(registry.register_component(std::move(desc)), std::invalid_argument);
 }
 
+TEST_CASE("rejected component registration does not consume an entity slot", "[!mayfail]") {
+    ashiato::Registry registry;
+    const ashiato::Entity before = registry.create();
+
+    ashiato::ComponentDesc desc;
+    desc.name = "BadFields";
+    desc.size = sizeof(Position);
+    desc.alignment = alignof(Position);
+    desc.fields = {ashiato::ComponentField{
+        "past_end",
+        sizeof(Position),
+        registry.primitive_type(ashiato::PrimitiveType::I32),
+        1}};
+
+    REQUIRE_THROWS_AS(registry.register_component(std::move(desc)), std::invalid_argument);
+
+    const ashiato::Entity after = registry.create();
+    REQUIRE(ashiato::Registry::entity_index(after) == ashiato::Registry::entity_index(before) + 1U);
+}
+
+TEST_CASE("runtime component registration rejects invalid base alignment") {
+    ashiato::Registry registry;
+
+    ashiato::ComponentDesc non_power_of_two;
+    non_power_of_two.name = "BadAlignment";
+    non_power_of_two.size = sizeof(std::uint64_t);
+    non_power_of_two.alignment = 3;
+    REQUIRE_THROWS_AS(registry.register_component(std::move(non_power_of_two)), std::invalid_argument);
+
+    ashiato::ComponentDesc misaligned_stride;
+    misaligned_stride.name = "MisalignedStride";
+    misaligned_stride.size = 6;
+    misaligned_stride.alignment = 4;
+    REQUIRE_THROWS_AS(registry.register_component(std::move(misaligned_stride)), std::invalid_argument);
+
+    ashiato::ComponentDesc under_aligned;
+    under_aligned.name = "UnderAlignedField";
+    under_aligned.size = sizeof(std::int32_t);
+    under_aligned.alignment = 1;
+    under_aligned.fields = {ashiato::ComponentField{
+        "value",
+        0,
+        registry.primitive_type(ashiato::PrimitiveType::I32),
+        1}};
+    REQUIRE_THROWS_AS(registry.register_component(std::move(under_aligned)), std::invalid_argument);
+}
+
 TEST_CASE("debug printing supports primitive scalars and unprintable fields") {
     ashiato::Registry registry;
     registry.register_component<Position>("Position");

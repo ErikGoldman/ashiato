@@ -820,6 +820,12 @@ Entity Registry::register_component_impl(
     if (desc.alignment == 0) {
         throw std::invalid_argument("component alignment must be greater than zero");
     }
+    if ((desc.alignment & (desc.alignment - 1)) != 0) {
+        throw std::invalid_argument("component alignment must be a power of two");
+    }
+    if (desc.size % desc.alignment != 0) {
+        throw std::invalid_argument("component size must be a multiple of component alignment");
+    }
 
     if (!desc.name.empty()) {
         const auto by_name = component_catalog_.names.find(desc.name);
@@ -941,7 +947,10 @@ bool Registry::valid_component_field(const ComponentRecord& component, const Com
 
     const std::size_t field_size = field_type->info.size;
     const std::size_t field_alignment = field_type->info.alignment;
-    if (field_size == 0 || field_alignment == 0 || field.offset % field_alignment != 0) {
+    if (field_size == 0 ||
+        field_alignment == 0 ||
+        component.info.alignment < field_alignment ||
+        field.offset % field_alignment != 0) {
         return false;
     }
 

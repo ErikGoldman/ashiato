@@ -1809,6 +1809,7 @@ private:
         std::vector<unsigned char> added_;
         std::vector<unsigned char> tombstones_;
         std::vector<std::uint32_t> tombstone_indices_;
+        std::vector<std::uint32_t> tombstone_positions_;
         std::vector<std::uint64_t> tombstone_entities_;
         unsigned char* data_ = nullptr;
         std::size_t size_ = 0;
@@ -2878,6 +2879,7 @@ struct DirtySnapshotFrame {
     DirtySnapshotFrameKind kind = DirtySnapshotFrameKind::Full;
     const Registry::Snapshot* full = nullptr;
     const Registry::DeltaSnapshot* delta = nullptr;
+    const SnapshotComponentOptions* component_options = nullptr;
 };
 
 struct DirtySnapshotTrackerOptions {
