@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "commit": "604d79851c522b9a00804aa962b1c99c8572ad8d",
+  "short_commit": "604d79851c52",
+  "run_slug": "20260711T203626Z-604d79851c52",
+  "ref": "main",
+  "repository": "ErikGoldman/ashiato",
+  "run_id": "29167302385",
+  "run_attempt": "1",
+  "started_at": "2026-07-11T20:36:26.669469+00:00",
+  "finished_at": "2026-07-11T20:36:33.657059+00:00",
+  "subset": "characteristic"
+}
