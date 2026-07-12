@@ -686,6 +686,44 @@ TEST_CASE("structural_any composes with external access and tag filters") {
     }
 }
 
+TEST_CASE("structural jobs preserve combined access and tag filters") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+    registry.register_component<Velocity>("Velocity");
+    registry.register_component<Health>("Health");
+    registry.register_component<Active>("Active");
+    registry.register_component<Disabled>("Disabled");
+
+    const ashiato::Entity matching = registry.create();
+    const ashiato::Entity disabled = registry.create();
+    for (ashiato::Entity entity : {matching, disabled}) {
+        REQUIRE(registry.add<Position>(entity, Position{1, 0}) != nullptr);
+        REQUIRE(registry.add<Velocity>(entity, Velocity{2.0f, 0.0f}) != nullptr);
+        REQUIRE(registry.add<Active>(entity));
+    }
+    REQUIRE(registry.add<Disabled>(disabled));
+
+    int calls = 0;
+    registry.job<const Position>(0)
+        .access_other_entities<Velocity>()
+        .with_tags<const Active>()
+        .without_tags<const Disabled>()
+        .structural<Health>()
+        .each([&](auto& context, ashiato::Entity entity, const Position&) {
+            context.template write<Velocity>(entity).dx += 1.0f;
+            REQUIRE(context.template add<Health>(Health{5}) != nullptr);
+            ++calls;
+        });
+
+    registry.run_jobs();
+
+    REQUIRE(calls == 1);
+    REQUIRE(registry.get<Velocity>(matching).dx == 3.0f);
+    REQUIRE(registry.get<Velocity>(disabled).dx == 2.0f);
+    REQUIRE(registry.get<Health>(matching).value == 5);
+    REQUIRE(registry.try_get<Health>(disabled) == nullptr);
+}
+
 TEST_CASE("structural jobs dispatch matching lifecycle hooks") {
     ashiato::Registry registry;
     registry.register_component<Position>("Position");

@@ -51,6 +51,48 @@ TEST_CASE("job optional components do not filter and are limited to current enti
     REQUIRE(health_sum == 10);
 }
 
+TEST_CASE("filtered jobs preserve access and optional query behavior") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+    registry.register_component<Velocity>("Velocity");
+    registry.register_component<Health>("Health");
+    registry.register_component<Active>("Active");
+    registry.register_component<Disabled>("Disabled");
+
+    const ashiato::Entity matching = registry.create();
+    const ashiato::Entity no_health = registry.create();
+    const ashiato::Entity disabled = registry.create();
+    for (ashiato::Entity entity : {matching, no_health, disabled}) {
+        REQUIRE(registry.add<Position>(entity, Position{1, 0}) != nullptr);
+        REQUIRE(registry.add<Velocity>(entity, Velocity{2.0f, 0.0f}) != nullptr);
+        REQUIRE(registry.add<Active>(entity));
+    }
+    REQUIRE(registry.add<Health>(matching, Health{4}) != nullptr);
+    REQUIRE(registry.add<Disabled>(disabled));
+
+    int calls = 0;
+    registry.job<const Position>(0)
+        .access_other_entities<Velocity>()
+        .optional<Health>()
+        .with_tags<const Active>()
+        .without_tags<const Disabled>()
+        .each([&](auto& view, ashiato::Entity entity, const Position&) {
+            view.template write<Velocity>(entity).dx += 1.0f;
+            if (view.template contains<Health>()) {
+                view.template write<Health>().value += 2;
+            }
+            ++calls;
+        });
+
+    registry.run_jobs();
+
+    REQUIRE(calls == 2);
+    REQUIRE(registry.get<Velocity>(matching).dx == 3.0f);
+    REQUIRE(registry.get<Velocity>(no_health).dx == 3.0f);
+    REQUIRE(registry.get<Velocity>(disabled).dx == 2.0f);
+    REQUIRE(registry.get<Health>(matching).value == 6);
+}
+
 TEST_CASE("optional jobs can be threaded but access other entities jobs are single threaded") {
     ashiato::Registry registry;
     registry.register_component<Position>("Position");

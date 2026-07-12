@@ -70,6 +70,161 @@ struct type_list_concat<type_list<Left...>, type_list<Right...>> {
 template <typename T>
 using component_query_t = typename std::remove_cv<typename std::remove_reference<T>::type>::type;
 
+template <typename IterList, typename AccessList, typename OptionalList, typename WithTags, typename WithoutTags>
+struct query_spec {
+    using iter_components = IterList;
+    using access_components = AccessList;
+    using optional_components = OptionalList;
+    using with_tags = WithTags;
+    using without_tags = WithoutTags;
+};
+
+struct owned_group_query_cache {};
+struct ungrouped_query_cache {};
+
+template <typename T, typename List>
+struct component_position;
+
+template <typename T, typename List, bool MatchesFirst>
+struct component_position_step;
+
+template <typename T, typename First, typename... Rest>
+struct component_position_step<T, type_list<First, Rest...>, true> : std::integral_constant<std::size_t, 0> {};
+
+template <typename T, typename First, typename... Rest>
+struct component_position_step<T, type_list<First, Rest...>, false>
+    : std::integral_constant<std::size_t, 1 + component_position<T, type_list<Rest...>>::value> {};
+
+template <typename T, typename First, typename... Rest>
+struct component_position<T, type_list<First, Rest...>>
+    : component_position_step<
+          T,
+          type_list<First, Rest...>,
+          std::is_same<component_query_t<T>, component_query_t<First>>::value> {};
+
+template <typename T>
+struct component_position<T, type_list<>> {
+    static_assert(!std::is_same<T, T>::value, "component is not part of this ashiato query");
+};
+
+template <typename T>
+using component_ref_t = typename std::conditional<
+    std::is_const<typename std::remove_reference<T>::type>::value,
+    const component_query_t<T>&,
+    component_query_t<T>&>::type;
+
+template <typename T, typename... Components>
+struct contains_component;
+
+template <typename Storage, typename Group, typename Spec>
+struct resolved_query_state;
+
+template <
+    typename Storage,
+    typename Group,
+    typename... IterComponents,
+    typename... AccessComponents,
+    typename... OptionalComponents,
+    typename... WithTags,
+    typename... WithoutTags>
+struct resolved_query_state<
+    Storage,
+    Group,
+    query_spec<
+        type_list<IterComponents...>,
+        type_list<AccessComponents...>,
+        type_list<OptionalComponents...>,
+        type_list<WithTags...>,
+        type_list<WithoutTags...>>> {
+    std::array<Storage*, sizeof...(IterComponents)> iter_storages{};
+    std::array<Storage*, sizeof...(AccessComponents)> access_storages{};
+    std::array<Storage*, sizeof...(OptionalComponents)> optional_storages{};
+    std::array<Storage*, sizeof...(WithTags)> with_tag_storages{};
+    std::array<Storage*, sizeof...(WithoutTags)> without_tag_storages{};
+    Group* group = nullptr;
+    std::uint64_t topology_token = 0;
+};
+
+template <
+    typename T,
+    typename Storage,
+    typename Group,
+    typename... IterComponents,
+    typename... AccessComponents,
+    typename... OptionalComponents,
+    typename... WithTags,
+    typename... WithoutTags>
+Storage* query_storage(
+    resolved_query_state<
+        Storage,
+        Group,
+        query_spec<
+            type_list<IterComponents...>,
+            type_list<AccessComponents...>,
+            type_list<OptionalComponents...>,
+            type_list<WithTags...>,
+            type_list<WithoutTags...>>>& state) {
+    if constexpr (contains_component<T, IterComponents...>::value) {
+        constexpr std::size_t position = component_position<T, type_list<IterComponents...>>::value;
+        return state.iter_storages[position];
+    } else if constexpr (contains_component<T, AccessComponents...>::value) {
+        constexpr std::size_t position = component_position<T, type_list<AccessComponents...>>::value;
+        return state.access_storages[position];
+    } else {
+        static_assert(
+            contains_component<T, OptionalComponents...>::value,
+            "component is not part of this ashiato query");
+        constexpr std::size_t position = component_position<T, type_list<OptionalComponents...>>::value;
+        return state.optional_storages[position];
+    }
+}
+
+template <
+    typename T,
+    typename Storage,
+    typename Group,
+    typename... IterComponents,
+    typename... AccessComponents,
+    typename... OptionalComponents,
+    typename... WithTags,
+    typename... WithoutTags>
+const Storage* query_storage(
+    const resolved_query_state<
+        Storage,
+        Group,
+        query_spec<
+            type_list<IterComponents...>,
+            type_list<AccessComponents...>,
+            type_list<OptionalComponents...>,
+            type_list<WithTags...>,
+            type_list<WithoutTags...>>>& state) {
+    if constexpr (contains_component<T, IterComponents...>::value) {
+        constexpr std::size_t position = component_position<T, type_list<IterComponents...>>::value;
+        return state.iter_storages[position];
+    } else if constexpr (contains_component<T, AccessComponents...>::value) {
+        constexpr std::size_t position = component_position<T, type_list<AccessComponents...>>::value;
+        return state.access_storages[position];
+    } else {
+        static_assert(
+            contains_component<T, OptionalComponents...>::value,
+            "component is not part of this ashiato query");
+        constexpr std::size_t position = component_position<T, type_list<OptionalComponents...>>::value;
+        return state.optional_storages[position];
+    }
+}
+
+template <typename T, typename Storage>
+component_ref_t<T> query_component_ref(Storage& storage, std::uint32_t index) {
+    if constexpr (std::is_const<typename std::remove_reference<T>::type>::value) {
+        return *static_cast<const component_query_t<T>*>(storage.get_unchecked(index));
+    } else {
+        void* value = Storage::range_dirty_deferred()
+            ? storage.write_unchecked_without_dirty(index)
+            : storage.write_unchecked(index);
+        return *static_cast<component_query_t<T>*>(value);
+    }
+}
+
 template <typename T>
 inline std::string_view compiler_component_type_key() noexcept {
 #if defined(_MSC_VER)
@@ -99,6 +254,128 @@ const void* component_type_token() noexcept {
 
 template <typename T>
 struct is_singleton_query : is_singleton_component<component_query_t<T>> {};
+
+template <typename Component, typename Storage>
+void consider_query_driver(Storage* storage, Storage*& driver, bool& missing_required_storage) {
+    if constexpr (!is_singleton_query<Component>::value) {
+        if (storage == nullptr) {
+            missing_required_storage = true;
+        } else if (driver == nullptr || storage->dense_size() < driver->dense_size()) {
+            driver = storage;
+        }
+    }
+}
+
+template <typename Storage, typename... Components, std::size_t... Positions>
+Storage* select_query_driver(
+    const std::array<Storage*, sizeof...(Components)>& storages,
+    type_list<Components...>,
+    std::index_sequence<Positions...>) {
+    Storage* driver = nullptr;
+    bool missing_required_storage = false;
+    (consider_query_driver<Components>(storages[Positions], driver, missing_required_storage), ...);
+    return missing_required_storage ? nullptr : driver;
+}
+
+template <typename Storage, typename... Components>
+Storage* select_query_driver(
+    const std::array<Storage*, sizeof...(Components)>& storages,
+    type_list<Components...> components) {
+    return select_query_driver(storages, components, std::index_sequence_for<Components...>{});
+}
+
+template <
+    typename Storage,
+    typename... IterComponents,
+    typename... WithTags,
+    std::size_t... IterPositions,
+    std::size_t... TagPositions>
+Storage* select_query_driver(
+    const std::array<Storage*, sizeof...(IterComponents)>& iter_storages,
+    type_list<IterComponents...>,
+    const std::array<Storage*, sizeof...(WithTags)>& with_tag_storages,
+    type_list<WithTags...>,
+    std::index_sequence<IterPositions...>,
+    std::index_sequence<TagPositions...>) {
+    Storage* driver = nullptr;
+    bool missing_required_storage = false;
+    (consider_query_driver<IterComponents>(
+         iter_storages[IterPositions],
+         driver,
+         missing_required_storage),
+     ...);
+    (consider_query_driver<WithTags>(
+         with_tag_storages[TagPositions],
+         driver,
+         missing_required_storage),
+     ...);
+    return missing_required_storage ? nullptr : driver;
+}
+
+template <typename Storage, typename... IterComponents, typename... WithTags>
+Storage* select_query_driver(
+    const std::array<Storage*, sizeof...(IterComponents)>& iter_storages,
+    type_list<IterComponents...> iter_components,
+    const std::array<Storage*, sizeof...(WithTags)>& with_tag_storages,
+    type_list<WithTags...> with_tags) {
+    return select_query_driver(
+        iter_storages,
+        iter_components,
+        with_tag_storages,
+        with_tags,
+        std::index_sequence_for<IterComponents...>{},
+        std::index_sequence_for<WithTags...>{});
+}
+
+template <typename Storage, typename... Components, std::size_t... Positions>
+bool query_contains_required(
+    const std::array<Storage*, sizeof...(Components)>& storages,
+    std::uint32_t index,
+    type_list<Components...>,
+    std::index_sequence<Positions...>) {
+    (void)storages;
+    (void)index;
+    return ((is_singleton_query<Components>::value ||
+             (storages[Positions] != nullptr && storages[Positions]->contains_index(index))) && ...);
+}
+
+template <typename Storage, typename... Components>
+bool query_contains_required(
+    const std::array<Storage*, sizeof...(Components)>& storages,
+    std::uint32_t index,
+    type_list<Components...> components) {
+    return query_contains_required(storages, index, components, std::index_sequence_for<Components...>{});
+}
+
+template <typename Storage, std::size_t Count, std::size_t... Positions>
+bool query_contains_included(
+    const std::array<Storage*, Count>& storages,
+    std::uint32_t index,
+    std::index_sequence<Positions...>) {
+    (void)storages;
+    (void)index;
+    return ((storages[Positions] != nullptr && storages[Positions]->contains_index(index)) && ...);
+}
+
+template <typename Storage, std::size_t Count>
+bool query_contains_included(const std::array<Storage*, Count>& storages, std::uint32_t index) {
+    return query_contains_included(storages, index, std::make_index_sequence<Count>{});
+}
+
+template <typename Storage, std::size_t Count, std::size_t... Positions>
+bool query_contains_excluded(
+    const std::array<Storage*, Count>& storages,
+    std::uint32_t index,
+    std::index_sequence<Positions...>) {
+    (void)storages;
+    (void)index;
+    return ((storages[Positions] == nullptr || !storages[Positions]->contains_index(index)) && ...);
+}
+
+template <typename Storage, std::size_t Count>
+bool query_contains_excluded(const std::array<Storage*, Count>& storages, std::uint32_t index) {
+    return query_contains_excluded(storages, index, std::make_index_sequence<Count>{});
+}
 
 template <typename T>
 struct is_tag_query
@@ -2121,6 +2398,250 @@ private:
         bool single_thread = true;
     };
 
+    template <typename Derived>
+    class JobBuilderBase {
+    public:
+        Derived& name(std::string value) {
+            name_ = std::move(value);
+            return derived();
+        }
+
+    protected:
+        JobBuilderBase(Registry& registry, int order)
+            : registry_(&registry), order_(order) {}
+
+        JobBuilderBase(Registry& registry, int order, JobThreadingOptions threading, std::string name)
+            : registry_(&registry), order_(order), threading_(threading), name_(std::move(name)) {}
+
+        Derived& derived() {
+            return static_cast<Derived&>(*this);
+        }
+
+        Registry* registry_;
+        int order_ = 0;
+        JobThreadingOptions threading_;
+        std::string name_;
+    };
+
+    template <typename Derived, bool AllowParallel>
+    class ThreadedJobBuilderBase : public JobBuilderBase<Derived> {
+    public:
+        Derived& max_threads(std::size_t count) {
+            static_assert(AllowParallel, "ashiato access_other_entities jobs must be single threaded");
+            this->threading_.max_threads = std::max<std::size_t>(count, 1);
+            this->threading_.single_thread = false;
+            return this->derived();
+        }
+
+        Derived& single_thread() {
+            this->threading_.max_threads = 1;
+            this->threading_.single_thread = true;
+            return this->derived();
+        }
+
+        Derived& min_entities_per_thread(std::size_t count) {
+            this->threading_.min_entities_per_thread = std::max<std::size_t>(count, 1);
+            return this->derived();
+        }
+
+    protected:
+        using JobBuilderBase<Derived>::JobBuilderBase;
+    };
+
+    template <
+        typename... IterComponents,
+        typename... AccessComponents,
+        typename... OptionalComponents,
+        typename... WithTags,
+        typename... WithoutTags>
+    static auto make_job_query_view(
+        Registry& registry,
+        detail::query_spec<
+            detail::type_list<IterComponents...>,
+            detail::type_list<AccessComponents...>,
+            detail::type_list<OptionalComponents...>,
+            detail::type_list<WithTags...>,
+            detail::type_list<WithoutTags...>>) {
+        if constexpr (
+            sizeof...(AccessComponents) == 0 && sizeof...(OptionalComponents) == 0 && sizeof...(WithTags) == 0 &&
+            sizeof...(WithoutTags) == 0) {
+            return registry.template view<IterComponents...>();
+        } else if constexpr (
+            sizeof...(AccessComponents) == 0 && sizeof...(WithTags) == 0 && sizeof...(WithoutTags) == 0) {
+            return registry.template view<IterComponents...>().template optional<OptionalComponents...>();
+        } else if constexpr (sizeof...(WithTags) == 0 && sizeof...(WithoutTags) == 0) {
+            return registry.template view<IterComponents...>()
+                .template access<AccessComponents...>()
+                .template optional<OptionalComponents...>();
+        } else if constexpr (sizeof...(AccessComponents) == 0 && sizeof...(OptionalComponents) == 0) {
+            return registry.template view<IterComponents...>()
+                .template with_tags<WithTags...>()
+                .template without_tags<WithoutTags...>();
+        } else if constexpr (sizeof...(AccessComponents) == 0) {
+            return registry.template view<IterComponents...>()
+                .template optional<OptionalComponents...>()
+                .template with_tags<WithTags...>()
+                .template without_tags<WithoutTags...>();
+        } else {
+            return registry.template view<IterComponents...>()
+                .template access<AccessComponents...>()
+                .template optional<OptionalComponents...>()
+                .template with_tags<WithTags...>()
+                .template without_tags<WithoutTags...>();
+        }
+    }
+
+    template <
+        typename Fn,
+        typename... IterComponents,
+        typename... AccessComponents,
+        typename... OptionalComponents,
+        typename... WithTags,
+        typename... WithoutTags>
+    Entity register_query_job(
+        int order,
+        const std::string& name,
+        const JobThreadingOptions& threading,
+        Fn&& fn,
+        detail::query_spec<
+            detail::type_list<IterComponents...>,
+            detail::type_list<AccessComponents...>,
+            detail::type_list<OptionalComponents...>,
+            detail::type_list<WithTags...>,
+            detail::type_list<WithoutTags...>> spec) {
+        using Callback = typename std::decay<Fn>::type;
+        auto callback = std::make_shared<Callback>(std::forward<Fn>(fn));
+        JobAccessMetadata metadata = make_job_access_metadata<IterComponents..., OptionalComponents...>();
+        append_job_external_access_metadata<AccessComponents...>(metadata);
+        append_job_with_filter_metadata<WithTags...>(metadata);
+        append_job_without_filter_metadata<WithoutTags...>(metadata);
+        return add_job(
+            order,
+            name,
+            std::move(metadata),
+            [callback, spec](Registry& registry) mutable {
+                auto view = make_job_query_view(registry, spec);
+                view.job_callback_scope().each_reverse(*callback);
+            },
+            [spec](Registry& registry) {
+                return make_job_query_view(registry, spec).matching_indices();
+            },
+            [callback, spec](
+                Registry& registry,
+                const std::vector<std::uint32_t>& indices,
+                std::size_t begin,
+                std::size_t end) mutable {
+                auto view = make_job_query_view(registry, spec);
+                view.job_callback_scope().each_index_range(*callback, indices, begin, end);
+            },
+            make_job_range_dirty_writes<IterComponents...>(),
+            threading,
+            false);
+    }
+
+    template <
+        bool DispatchHooks,
+        typename StructuralPolicy,
+        typename Callback,
+        typename ViewType,
+        typename Runner,
+        typename... StructuralComponents>
+    static void run_structural_query_callback(
+        Registry& registry,
+        ViewType& view,
+        Callback& callback,
+        Runner&& runner,
+        detail::type_list<StructuralComponents...>) {
+        auto adapter = [&callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
+            using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
+            using Context = JobStructuralContext<
+                DispatchHooks,
+                StructuralPolicy::value,
+                ActiveView,
+                StructuralComponents...>;
+            Context context(registry, active_view, entity);
+            detail::invoke_job_context_callback(callback, context, entity, components...);
+        };
+        runner(view, adapter);
+    }
+
+    template <
+        typename StructuralPolicy,
+        typename Fn,
+        typename... IterComponents,
+        typename... AccessComponents,
+        typename... OptionalComponents,
+        typename... WithTags,
+        typename... WithoutTags,
+        typename... StructuralComponents>
+    Entity register_structural_query_job(
+        int order,
+        const std::string& name,
+        JobThreadingOptions threading,
+        Fn&& fn,
+        detail::query_spec<
+            detail::type_list<IterComponents...>,
+            detail::type_list<AccessComponents...>,
+            detail::type_list<OptionalComponents...>,
+            detail::type_list<WithTags...>,
+            detail::type_list<WithoutTags...>> spec,
+        detail::type_list<StructuralComponents...> structural_components_list,
+        StructuralPolicy) {
+        using Callback = typename std::decay<Fn>::type;
+        auto callback = std::make_shared<Callback>(std::forward<Fn>(fn));
+        JobAccessMetadata metadata = make_job_access_metadata<IterComponents..., OptionalComponents...>();
+        append_job_external_access_metadata<AccessComponents...>(metadata);
+        append_job_with_filter_metadata<WithTags...>(metadata);
+        append_job_without_filter_metadata<WithoutTags...>(metadata);
+        append_job_structural_metadata<StructuralComponents...>(metadata);
+        auto hook_cache = std::make_shared<ComponentLifecycleHookMatchCache>();
+        auto structural_components = make_job_structural_components<StructuralComponents...>();
+        threading.single_thread = true;
+        threading.max_threads = 1;
+        return add_job(
+            order,
+            name,
+            std::move(metadata),
+            [callback, hook_cache, structural_components, structural_components_list, spec](Registry& registry) mutable {
+                auto view = make_job_query_view(registry, spec);
+                auto runner = [&registry](auto& active_view, auto& adapter) {
+                    registry.template each_structural_job<StructuralPolicy::value>(registry, active_view, adapter);
+                };
+                if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
+                    run_structural_query_callback<true, StructuralPolicy>(
+                        registry, view, *callback, runner, structural_components_list);
+                } else {
+                    run_structural_query_callback<false, StructuralPolicy>(
+                        registry, view, *callback, runner, structural_components_list);
+                }
+            },
+            [spec](Registry& registry) {
+                return make_job_query_view(registry, spec).matching_indices();
+            },
+            [callback, hook_cache, structural_components, structural_components_list, spec](
+                Registry& registry,
+                const std::vector<std::uint32_t>& indices,
+                std::size_t begin,
+                std::size_t end) mutable {
+                auto view = make_job_query_view(registry, spec);
+                auto runner = [&registry, &indices, begin, end](auto& active_view, auto& adapter) {
+                    registry.template each_structural_job_range<StructuralPolicy::value>(
+                        registry, active_view, adapter, indices, begin, end);
+                };
+                if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
+                    run_structural_query_callback<true, StructuralPolicy>(
+                        registry, view, *callback, runner, structural_components_list);
+                } else {
+                    run_structural_query_callback<false, StructuralPolicy>(
+                        registry, view, *callback, runner, structural_components_list);
+                }
+            },
+            make_job_range_dirty_writes<IterComponents...>(),
+            threading,
+            true,
+            StructuralPolicy::value);
+    }
+
     Entity add_job(
         int order,
         std::string name,
@@ -2177,6 +2698,56 @@ private:
             }
         }
         return best;
+    }
+
+    template <typename T>
+    TypeErasedStorage* resolve_query_storage() {
+        return find_storage(registered_component<detail::component_query_t<T>>());
+    }
+
+    template <typename T>
+    TypeErasedStorage* resolve_query_tag_storage() {
+        const Entity tag = registered_component<detail::component_query_t<T>>();
+        require_tag_component(tag);
+        return find_storage(tag);
+    }
+
+    template <
+        typename CachePolicy,
+        typename... IterComponents,
+        typename... AccessComponents,
+        typename... OptionalComponents,
+        typename... WithTags,
+        typename... WithoutTags>
+    bool refresh_query_state(
+        detail::resolved_query_state<
+            TypeErasedStorage,
+            GroupRecord,
+            detail::query_spec<
+                detail::type_list<IterComponents...>,
+                detail::type_list<AccessComponents...>,
+                detail::type_list<OptionalComponents...>,
+                detail::type_list<WithTags...>,
+                detail::type_list<WithoutTags...>>>& state,
+        CachePolicy) {
+        if (state.topology_token == storage_registry_.view_topology_token) {
+            return false;
+        }
+        state.iter_storages = {{resolve_query_storage<IterComponents>()...}};
+        state.access_storages = {{resolve_query_storage<AccessComponents>()...}};
+        state.optional_storages = {{resolve_query_storage<OptionalComponents>()...}};
+        state.with_tag_storages = {{resolve_query_tag_storage<WithTags>()...}};
+        state.without_tag_storages = {{resolve_query_tag_storage<WithoutTags>()...}};
+        if constexpr (std::is_same<CachePolicy, detail::owned_group_query_cache>::value) {
+            state.group = best_group_for_view<IterComponents...>();
+        } else {
+            static_assert(
+                std::is_same<CachePolicy, detail::ungrouped_query_cache>::value,
+                "unsupported ashiato query cache policy");
+            state.group = nullptr;
+        }
+        state.topology_token = storage_registry_.view_topology_token;
+        return true;
     }
 
     static bool includes_all(const std::vector<std::uint32_t>& lhs, const std::vector<std::uint32_t>& rhs);
@@ -3006,12 +3577,21 @@ class Registry::View : public ViewIterationBase<View<Components...>> {
     static_assert(detail::unique_components<Components...>::value, "ashiato views cannot repeat component types");
     static_assert(!detail::contains_tag_query<Components...>::value, "ashiato tags must be view filters");
 
+    using Spec = detail::query_spec<
+        detail::type_list<Components...>,
+        detail::type_list<>,
+        detail::type_list<>,
+        detail::type_list<>,
+        detail::type_list<>>;
+    using ResolvedState = detail::resolved_query_state<TypeErasedStorage, GroupRecord, Spec>;
+
 public:
     explicit View(Registry& registry)
-        : registry_(&registry),
-          storages_{{resolve_storage<Components>(registry)...}},
-          group_(registry.best_group_for_view<Components...>()),
-          cache_token_(registry.storage_registry_.view_topology_token) {}
+        : registry_(&registry) {
+        state_.iter_storages = {{registry.resolve_query_storage<Components>()...}};
+        state_.group = registry.best_group_for_view<Components...>();
+        state_.topology_token = registry.storage_registry_.view_topology_token;
+    }
 
     template <typename Fn>
     void each(Fn&& fn) {
@@ -3037,7 +3617,7 @@ public:
         refresh_cache_if_needed();
         return AccessView<detail::type_list<Components...>, detail::type_list<AccessComponents...>, detail::type_list<>>(
             *registry_,
-            storages_);
+            state_.iter_storages);
     }
 
     template <typename... OptionalComponents>
@@ -3046,7 +3626,7 @@ public:
         refresh_cache_if_needed();
         return AccessView<detail::type_list<Components...>, detail::type_list<>, detail::type_list<OptionalComponents...>>(
             *registry_,
-            storages_);
+            state_.iter_storages);
     }
 
     template <typename... Tags>
@@ -3065,7 +3645,7 @@ public:
             detail::type_list<Tags...>,
             detail::type_list<>>(
             *registry_,
-            storages_,
+            state_.iter_storages,
             std::array<TypeErasedStorage*, 0>{},
             std::array<TypeErasedStorage*, 0>{});
     }
@@ -3086,7 +3666,7 @@ public:
             detail::type_list<>>
             view(
                 *registry_,
-                storages_,
+                state_.iter_storages,
                 std::array<TypeErasedStorage*, 0>{},
                 std::array<TypeErasedStorage*, 0>{});
         view.add_runtime_with_tags(tags);
@@ -3109,7 +3689,7 @@ public:
             detail::type_list<>,
             detail::type_list<Tags...>>(
             *registry_,
-            storages_,
+            state_.iter_storages,
             std::array<TypeErasedStorage*, 0>{},
             std::array<TypeErasedStorage*, 0>{});
     }
@@ -3130,7 +3710,7 @@ public:
             detail::type_list<>>
             view(
                 *registry_,
-                storages_,
+                state_.iter_storages,
                 std::array<TypeErasedStorage*, 0>{},
                 std::array<TypeErasedStorage*, 0>{});
         view.add_runtime_without_tags(tags);
@@ -3248,7 +3828,7 @@ private:
     friend class ViewIterationBase<View>;
 
     std::size_t iteration_size(const TypeErasedStorage& driver) const {
-        return group_ != nullptr ? group_->size : driver.dense_size();
+        return state_.group != nullptr ? state_.group->size : driver.dense_size();
     }
 
     template <bool Reverse, typename Fn>
@@ -3265,92 +3845,36 @@ private:
         }
     }
 
-    static constexpr std::size_t component_count = sizeof...(Components);
-
     template <typename T>
     static constexpr bool has_component() {
         return detail::contains_component<T, Components...>::value;
     }
 
-    template <typename T>
-    using component_ref_t = typename std::conditional<
-        std::is_const<typename std::remove_reference<T>::type>::value,
-        const detail::component_query_t<T>&,
-        detail::component_query_t<T>&>::type;
-
-    template <typename T, typename First, typename... Rest>
-    static constexpr std::size_t component_position() {
-        if constexpr (std::is_same<detail::component_query_t<T>, detail::component_query_t<First>>::value) {
-            return 0;
-        } else {
-            return 1 + component_position<T, Rest...>();
-        }
-    }
-
-    template <typename T>
-    static TypeErasedStorage* resolve_storage(Registry& registry) {
-        const Entity component = registry.registered_component<detail::component_query_t<T>>();
-        return registry.find_storage(component);
-    }
-
     void refresh_cache_if_needed() const {
-        if (cache_token_ == registry_->storage_registry_.view_topology_token) {
-            return;
-        }
-        storages_ = {{resolve_storage<Components>(*registry_)...}};
-        group_ = registry_->best_group_for_view<Components...>();
-        cache_token_ = registry_->storage_registry_.view_topology_token;
+        (void)registry_->refresh_query_state(state_, detail::owned_group_query_cache{});
     }
 
     TypeErasedStorage* driver_storage() const {
-        if (group_ != nullptr) {
-            return registry_->find_storage(Entity{registry_->entity_store_.slots[group_->owned.front()]});
+        if (state_.group != nullptr) {
+            return registry_->find_storage(Entity{registry_->entity_store_.slots[state_.group->owned.front()]});
         }
-
-        TypeErasedStorage* driver = nullptr;
-        constexpr bool singleton_flags[] = {detail::is_singleton_query<Components>::value...};
-        for (std::size_t position = 0; position < storages_.size(); ++position) {
-            TypeErasedStorage* storage = storages_[position];
-            if (singleton_flags[position]) {
-                continue;
-            }
-            if (storage == nullptr) {
-                return nullptr;
-            }
-            if (driver == nullptr || storage->dense_size() < driver->dense_size()) {
-                driver = storage;
-            }
-        }
-        return driver;
+        return detail::select_query_driver(state_.iter_storages, detail::type_list<Components...>{});
     }
 
     bool contains_all(std::uint32_t index) const {
-        constexpr std::array<bool, component_count> singleton_flags = {
-            detail::is_singleton_query<Components>::value...};
-        for (std::size_t position = 0; position < storages_.size(); ++position) {
-            const TypeErasedStorage* storage = storages_[position];
-            if (singleton_flags[position]) {
-                continue;
-            }
-            if (storage == nullptr || !storage->contains_index(index)) {
-                return false;
-            }
-        }
-        return true;
+        return detail::query_contains_required(state_.iter_storages, index, detail::type_list<Components...>{});
     }
 
     template <typename T>
     TypeErasedStorage* storage_for_type() {
         static_assert(has_component<T>(), "component is not part of this ashiato view");
-        constexpr std::size_t position = component_position<T, Components...>();
-        return storages_[position];
+        return detail::query_storage<T>(state_);
     }
 
     template <typename T>
     const TypeErasedStorage* storage_for_type() const {
         static_assert(has_component<T>(), "component is not part of this ashiato view");
-        constexpr std::size_t position = component_position<T, Components...>();
-        return storages_[position];
+        return detail::query_storage<T>(state_);
     }
 
     template <typename Fn>
@@ -3367,7 +3891,7 @@ private:
 
     template <typename Fn>
     void call_each_unchecked(Fn& callback, Entity entity, std::uint32_t index) {
-        if constexpr (std::is_invocable<Fn&, View&, Entity, component_ref_t<Components>...>::value) {
+        if constexpr (std::is_invocable<Fn&, View&, Entity, detail::component_ref_t<Components>...>::value) {
             callback(*this, entity, component_ref<Components>(index)...);
         } else {
             callback(entity, component_ref<Components>(index)...);
@@ -3375,25 +3899,16 @@ private:
     }
 
     template <typename T>
-    component_ref_t<T> component_ref(std::uint32_t index) {
+    detail::component_ref_t<T> component_ref(std::uint32_t index) {
         TypeErasedStorage* storage = storage_for_type<T>();
         if constexpr (detail::is_singleton_query<T>::value) {
             index = entity_index(registry_->component_catalog_.singleton_entity);
         }
-        if constexpr (std::is_const<typename std::remove_reference<T>::type>::value) {
-            return *static_cast<const detail::component_query_t<T>*>(storage->get_unchecked(index));
-        } else {
-            void* value = TypeErasedStorage::range_dirty_deferred()
-                ? storage->write_unchecked_without_dirty(index)
-                : storage->write_unchecked(index);
-            return *static_cast<detail::component_query_t<T>*>(value);
-        }
+        return detail::query_component_ref<T>(*storage, index);
     }
 
     Registry* registry_ = nullptr;
-    mutable std::array<TypeErasedStorage*, component_count> storages_;
-    mutable GroupRecord* group_ = nullptr;
-    mutable std::uint64_t cache_token_ = 0;
+    mutable ResolvedState state_;
     bool job_callback_scope_ = false;
 };
 
@@ -3513,6 +4028,183 @@ private:
     bool job_callback_scope_ = false;
 };
 
+namespace detail {
+
+template <typename Derived, typename IterList, typename AccessList, typename OptionalList>
+class query_access_api;
+
+template <typename Derived, typename... IterComponents, typename... AccessComponents, typename... OptionalComponents>
+class query_access_api<
+    Derived,
+    type_list<IterComponents...>,
+    type_list<AccessComponents...>,
+    type_list<OptionalComponents...>> {
+public:
+    template <
+        typename T,
+        typename std::enable_if<
+            contains_component<T, AccessComponents...>::value && !is_singleton_query<T>::value,
+            int>::type = 0>
+    bool contains(Entity entity) const {
+        const Derived& view = derived();
+        view.refresh_cache_if_needed();
+        if (!view.registry_->alive(entity)) {
+            return false;
+        }
+        const auto* storage = view.template storage_for_type<T>();
+        return storage != nullptr && storage->contains_index(Registry::entity_index(entity));
+    }
+
+    template <
+        typename T,
+        typename std::enable_if<
+            contains_component<T, IterComponents..., OptionalComponents...>::value &&
+                !is_singleton_query<T>::value,
+            int>::type = 0>
+    bool contains() const {
+        const Derived& view = derived();
+        view.refresh_cache_if_needed();
+        if (view.active_callback_index_ == Registry::invalid_index) {
+            return false;
+        }
+        const auto* storage = view.template storage_for_type<T>();
+        return storage != nullptr && storage->contains_index(view.active_callback_index_);
+    }
+
+    template <
+        typename T,
+        typename std::enable_if<
+            contains_component<T, AccessComponents...>::value && !is_singleton_query<T>::value,
+            int>::type = 0>
+    const component_query_t<T>* try_get(Entity entity) const {
+        const Derived& view = derived();
+        view.refresh_cache_if_needed();
+        if (!view.registry_->alive(entity)) {
+            return nullptr;
+        }
+        const auto* storage = view.template storage_for_type<T>();
+        return storage != nullptr
+            ? static_cast<const component_query_t<T>*>(storage->get(Registry::entity_index(entity)))
+            : nullptr;
+    }
+
+    template <
+        typename T,
+        typename std::enable_if<
+            contains_component<T, IterComponents..., OptionalComponents...>::value &&
+                !is_singleton_query<T>::value,
+            int>::type = 0>
+    const component_query_t<T>* try_get() const {
+        const Derived& view = derived();
+        view.refresh_cache_if_needed();
+        if (view.active_callback_index_ == Registry::invalid_index) {
+            return nullptr;
+        }
+        const auto* storage = view.template storage_for_type<T>();
+        return storage != nullptr
+            ? static_cast<const component_query_t<T>*>(storage->get(view.active_callback_index_))
+            : nullptr;
+    }
+
+    template <
+        typename T,
+        typename std::enable_if<
+            contains_component<T, AccessComponents...>::value && !is_singleton_query<T>::value,
+            int>::type = 0>
+    const component_query_t<T>& get(Entity entity) const {
+        const Derived& view = derived();
+        view.refresh_cache_if_needed();
+        const auto* storage = view.template storage_for_type<T>();
+        assert(storage != nullptr);
+        return *static_cast<const component_query_t<T>*>(
+            storage->get_unchecked(Registry::entity_index(entity)));
+    }
+
+    template <
+        typename T,
+        typename std::enable_if<
+            contains_component<T, IterComponents..., OptionalComponents...>::value &&
+                !is_singleton_query<T>::value,
+            int>::type = 0>
+    const component_query_t<T>& get() const {
+        const Derived& view = derived();
+        view.refresh_cache_if_needed();
+        assert(view.active_callback_index_ != Registry::invalid_index);
+        const auto* storage = view.template storage_for_type<T>();
+        assert(storage != nullptr);
+        return *static_cast<const component_query_t<T>*>(storage->get_unchecked(view.active_callback_index_));
+    }
+
+    template <
+        typename T,
+        typename std::enable_if<
+            is_singleton_query<T>::value && contains_component<T, IterComponents..., AccessComponents...>::value,
+            int>::type = 0>
+    const component_query_t<T>& get() const {
+        const Derived& view = derived();
+        view.refresh_cache_if_needed();
+        const auto* storage = view.template storage_for_type<T>();
+        assert(storage != nullptr);
+        return *static_cast<const component_query_t<T>*>(storage->get_unchecked(view.singleton_query_index()));
+    }
+
+    template <
+        typename T,
+        typename std::enable_if<
+            !std::is_const<typename std::remove_reference<T>::type>::value &&
+                contains_mutable_component<T, AccessComponents...>::value && !is_singleton_query<T>::value,
+            int>::type = 0>
+    component_query_t<T>& write(Entity entity) {
+        Derived& view = derived();
+        view.refresh_cache_if_needed();
+        auto* storage = view.template storage_for_type<T>();
+        assert(storage != nullptr);
+        return *static_cast<component_query_t<T>*>(storage->write_unchecked(Registry::entity_index(entity)));
+    }
+
+    template <
+        typename T,
+        typename std::enable_if<
+            !std::is_const<typename std::remove_reference<T>::type>::value &&
+                contains_mutable_component<T, IterComponents..., OptionalComponents...>::value &&
+                !is_singleton_query<T>::value,
+            int>::type = 0>
+    component_query_t<T>& write() {
+        Derived& view = derived();
+        view.refresh_cache_if_needed();
+        assert(view.active_callback_index_ != Registry::invalid_index);
+        auto* storage = view.template storage_for_type<T>();
+        assert(storage != nullptr);
+        return *static_cast<component_query_t<T>*>(storage->write_unchecked(view.active_callback_index_));
+    }
+
+    template <
+        typename T,
+        typename std::enable_if<
+            is_singleton_query<T>::value &&
+                !std::is_const<typename std::remove_reference<T>::type>::value &&
+                contains_mutable_component<T, IterComponents..., AccessComponents...>::value,
+            int>::type = 0>
+    component_query_t<T>& write() {
+        Derived& view = derived();
+        view.refresh_cache_if_needed();
+        auto* storage = view.template storage_for_type<T>();
+        assert(storage != nullptr);
+        return *static_cast<component_query_t<T>*>(storage->write_unchecked(view.singleton_query_index()));
+    }
+
+private:
+    Derived& derived() {
+        return static_cast<Derived&>(*this);
+    }
+
+    const Derived& derived() const {
+        return static_cast<const Derived&>(*this);
+    }
+};
+
+}  // namespace detail
+
 template <typename... IterComponents, typename... AccessComponents, typename... OptionalComponents>
 class Registry::AccessView<
     detail::type_list<IterComponents...>,
@@ -3521,7 +4213,15 @@ class Registry::AccessView<
     : public ViewIterationBase<AccessView<
           detail::type_list<IterComponents...>,
           detail::type_list<AccessComponents...>,
-          detail::type_list<OptionalComponents...>>> {
+          detail::type_list<OptionalComponents...>>>,
+      public detail::query_access_api<
+          AccessView<
+              detail::type_list<IterComponents...>,
+              detail::type_list<AccessComponents...>,
+              detail::type_list<OptionalComponents...>>,
+          detail::type_list<IterComponents...>,
+          detail::type_list<AccessComponents...>,
+          detail::type_list<OptionalComponents...>> {
     static_assert(sizeof...(IterComponents) > 0, "ashiato views require at least one component");
     static_assert(detail::unique_components<IterComponents...>::value, "ashiato views cannot repeat component types");
     static_assert(detail::unique_components<AccessComponents...>::value, "ashiato access components cannot repeat types");
@@ -3538,14 +4238,23 @@ class Registry::AccessView<
             value,
         "ashiato optional components can only repeat iterated const components as mutable optional components");
 
+    using Spec = detail::query_spec<
+        detail::type_list<IterComponents...>,
+        detail::type_list<AccessComponents...>,
+        detail::type_list<OptionalComponents...>,
+        detail::type_list<>,
+        detail::type_list<>>;
+    using ResolvedState = detail::resolved_query_state<TypeErasedStorage, GroupRecord, Spec>;
+
 public:
     AccessView(Registry& registry, std::array<TypeErasedStorage*, sizeof...(IterComponents)> iter_storages)
-        : registry_(&registry),
-          iter_storages_(iter_storages),
-          access_storages_{{resolve_storage<AccessComponents>(registry)...}},
-          optional_storages_{{resolve_storage<OptionalComponents>(registry)...}},
-          group_(registry.best_group_for_view<IterComponents...>()),
-          cache_token_(registry.storage_registry_.view_topology_token) {}
+        : registry_(&registry) {
+        state_.iter_storages = iter_storages;
+        state_.access_storages = {{registry.resolve_query_storage<AccessComponents>()...}};
+        state_.optional_storages = {{registry.resolve_query_storage<OptionalComponents>()...}};
+        state_.group = registry.best_group_for_view<IterComponents...>();
+        state_.topology_token = registry.storage_registry_.view_topology_token;
+    }
 
     template <typename Fn>
     void each(Fn&& fn) {
@@ -3580,7 +4289,7 @@ public:
             detail::type_list<MoreOptionalComponents...>>::type;
         return AccessView<detail::type_list<IterComponents...>, detail::type_list<AccessComponents...>, NextOptional>(
             *registry_,
-            iter_storages_);
+            state_.iter_storages);
     }
 
     template <typename... MoreAccessComponents>
@@ -3597,7 +4306,7 @@ public:
             detail::type_list<MoreAccessComponents...>>::type;
         return AccessView<detail::type_list<IterComponents...>, NextAccess, detail::type_list<OptionalComponents...>>(
             *registry_,
-            iter_storages_);
+            state_.iter_storages);
     }
 
     template <typename... Tags>
@@ -3614,7 +4323,8 @@ public:
             detail::type_list<AccessComponents...>,
             detail::type_list<OptionalComponents...>,
             detail::type_list<Tags...>,
-            detail::type_list<>>(*registry_, iter_storages_, access_storages_, optional_storages_);
+            detail::type_list<>>(
+            *registry_, state_.iter_storages, state_.access_storages, state_.optional_storages);
     }
 
     TagFilteredView<
@@ -3631,7 +4341,7 @@ public:
             detail::type_list<OptionalComponents...>,
             detail::type_list<>,
             detail::type_list<>>
-            view(*registry_, iter_storages_, access_storages_, optional_storages_);
+            view(*registry_, state_.iter_storages, state_.access_storages, state_.optional_storages);
         view.add_runtime_with_tags(tags);
         return view;
     }
@@ -3650,7 +4360,8 @@ public:
             detail::type_list<AccessComponents...>,
             detail::type_list<OptionalComponents...>,
             detail::type_list<>,
-            detail::type_list<Tags...>>(*registry_, iter_storages_, access_storages_, optional_storages_);
+            detail::type_list<Tags...>>(
+            *registry_, state_.iter_storages, state_.access_storages, state_.optional_storages);
     }
 
     TagFilteredView<
@@ -3667,7 +4378,7 @@ public:
             detail::type_list<OptionalComponents...>,
             detail::type_list<>,
             detail::type_list<>>
-            view(*registry_, iter_storages_, access_storages_, optional_storages_);
+            view(*registry_, state_.iter_storages, state_.access_storages, state_.optional_storages);
         view.add_runtime_without_tags(tags);
         return view;
     }
@@ -3687,167 +4398,20 @@ public:
         return *this;
     }
 
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::contains_component<T, AccessComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    bool contains(Entity entity) const {
-        refresh_cache_if_needed();
-        if (!registry_->alive(entity)) {
-            return false;
-        }
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        return storage != nullptr && storage->contains_index(entity_index(entity));
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::contains_component<T, IterComponents..., OptionalComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    bool contains() const {
-        refresh_cache_if_needed();
-        if (active_callback_index_ == invalid_index) {
-            return false;
-        }
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        return storage != nullptr && storage->contains_index(active_callback_index_);
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::contains_component<T, AccessComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    const detail::component_query_t<T>* try_get(Entity entity) const {
-        refresh_cache_if_needed();
-        if (!registry_->alive(entity)) {
-            return nullptr;
-        }
-        const std::uint32_t index = entity_index(entity);
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        return storage != nullptr
-            ? static_cast<const detail::component_query_t<T>*>(storage->get(index))
-            : nullptr;
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::contains_component<T, IterComponents..., OptionalComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    const detail::component_query_t<T>* try_get() const {
-        refresh_cache_if_needed();
-        if (active_callback_index_ == invalid_index) {
-            return nullptr;
-        }
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        return storage != nullptr
-            ? static_cast<const detail::component_query_t<T>*>(storage->get(active_callback_index_))
-            : nullptr;
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::contains_component<T, AccessComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    const detail::component_query_t<T>& get(Entity entity) const {
-        refresh_cache_if_needed();
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        assert(storage != nullptr);
-
-        return *static_cast<const detail::component_query_t<T>*>(storage->get_unchecked(entity_index(entity)));
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::contains_component<T, IterComponents..., OptionalComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    const detail::component_query_t<T>& get() const {
-        refresh_cache_if_needed();
-        assert(active_callback_index_ != invalid_index);
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        assert(storage != nullptr);
-
-        return *static_cast<const detail::component_query_t<T>*>(storage->get_unchecked(active_callback_index_));
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::is_singleton_query<T>::value &&
-                detail::contains_component<T, IterComponents..., AccessComponents...>::value,
-            int>::type = 0>
-    const detail::component_query_t<T>& get() const {
-        refresh_cache_if_needed();
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        assert(storage != nullptr);
-
-        return *static_cast<const detail::component_query_t<T>*>(
-            storage->get_unchecked(entity_index(registry_->component_catalog_.singleton_entity)));
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            !std::is_const<typename std::remove_reference<T>::type>::value &&
-                detail::contains_mutable_component<T, AccessComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    detail::component_query_t<T>& write(Entity entity) {
-        refresh_cache_if_needed();
-        TypeErasedStorage* storage = storage_for_type<T>();
-        assert(storage != nullptr);
-
-        return *static_cast<detail::component_query_t<T>*>(storage->write_unchecked(entity_index(entity)));
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            !std::is_const<typename std::remove_reference<T>::type>::value &&
-                detail::contains_mutable_component<T, IterComponents..., OptionalComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    detail::component_query_t<T>& write() {
-        refresh_cache_if_needed();
-        assert(active_callback_index_ != invalid_index);
-        TypeErasedStorage* storage = storage_for_type<T>();
-        assert(storage != nullptr);
-
-        return *static_cast<detail::component_query_t<T>*>(storage->write_unchecked(active_callback_index_));
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::is_singleton_query<T>::value &&
-                !std::is_const<typename std::remove_reference<T>::type>::value &&
-                detail::contains_mutable_component<T, IterComponents..., AccessComponents...>::value,
-            int>::type = 0>
-    detail::component_query_t<T>& write() {
-        refresh_cache_if_needed();
-        TypeErasedStorage* storage = storage_for_type<T>();
-        assert(storage != nullptr);
-
-        return *static_cast<detail::component_query_t<T>*>(
-            storage->write_unchecked(entity_index(registry_->component_catalog_.singleton_entity)));
-    }
-
 private:
     friend class ViewIterationBase<AccessView>;
+    friend class detail::query_access_api<
+        AccessView,
+        detail::type_list<IterComponents...>,
+        detail::type_list<AccessComponents...>,
+        detail::type_list<OptionalComponents...>>;
+
+    std::uint32_t singleton_query_index() const {
+        return entity_index(registry_->component_catalog_.singleton_entity);
+    }
 
     std::size_t iteration_size(const TypeErasedStorage& driver) const {
-        return group_ != nullptr ? group_->size : driver.dense_size();
+        return state_.group != nullptr ? state_.group->size : driver.dense_size();
     }
 
     template <bool Reverse, typename Fn>
@@ -3864,110 +4428,32 @@ private:
         }
     }
 
-    template <typename T>
-    using component_ref_t = typename std::conditional<
-        std::is_const<typename std::remove_reference<T>::type>::value,
-        const detail::component_query_t<T>&,
-        detail::component_query_t<T>&>::type;
-
-    template <typename T, typename First, typename... Rest>
-    static constexpr std::size_t component_position() {
-        if constexpr (std::is_same<detail::component_query_t<T>, detail::component_query_t<First>>::value) {
-            return 0;
-        } else {
-            return 1 + component_position<T, Rest...>();
-        }
-    }
-
-    template <typename T>
-    static TypeErasedStorage* resolve_storage(Registry& registry) {
-        const Entity component = registry.registered_component<detail::component_query_t<T>>();
-        return registry.find_storage(component);
-    }
-
     void refresh_cache_if_needed() const {
-        if (cache_token_ == registry_->storage_registry_.view_topology_token) {
-            return;
-        }
-        iter_storages_ = {{resolve_storage<IterComponents>(*registry_)...}};
-        access_storages_ = {{resolve_storage<AccessComponents>(*registry_)...}};
-        optional_storages_ = {{resolve_storage<OptionalComponents>(*registry_)...}};
-        group_ = registry_->best_group_for_view<IterComponents...>();
-        cache_token_ = registry_->storage_registry_.view_topology_token;
+        (void)registry_->refresh_query_state(state_, detail::owned_group_query_cache{});
     }
 
     TypeErasedStorage* driver_storage() const {
-        if (group_ != nullptr) {
-            return registry_->find_storage(Entity{registry_->entity_store_.slots[group_->owned.front()]});
+        if (state_.group != nullptr) {
+            return registry_->find_storage(Entity{registry_->entity_store_.slots[state_.group->owned.front()]});
         }
-
-        TypeErasedStorage* driver = nullptr;
-        constexpr bool singleton_flags[] = {detail::is_singleton_query<IterComponents>::value...};
-        for (std::size_t position = 0; position < iter_storages_.size(); ++position) {
-            TypeErasedStorage* storage = iter_storages_[position];
-            if (singleton_flags[position]) {
-                continue;
-            }
-            if (storage == nullptr) {
-                return nullptr;
-            }
-            if (driver == nullptr || storage->dense_size() < driver->dense_size()) {
-                driver = storage;
-            }
-        }
-        return driver;
+        return detail::select_query_driver(state_.iter_storages, detail::type_list<IterComponents...>{});
     }
 
     bool contains_all(std::uint32_t index) const {
-        constexpr bool singleton_flags[] = {detail::is_singleton_query<IterComponents>::value...};
-        for (std::size_t position = 0; position < iter_storages_.size(); ++position) {
-            const TypeErasedStorage* storage = iter_storages_[position];
-            if (singleton_flags[position]) {
-                continue;
-            }
-            if (storage == nullptr || !storage->contains_index(index)) {
-                return false;
-            }
-        }
-        return true;
+        return detail::query_contains_required(
+            state_.iter_storages,
+            index,
+            detail::type_list<IterComponents...>{});
     }
 
     template <typename T>
     TypeErasedStorage* storage_for_type() {
-        if constexpr (detail::contains_component<T, IterComponents...>::value) {
-            constexpr std::size_t position = component_position<T, IterComponents...>();
-            return iter_storages_[position];
-        } else {
-            if constexpr (detail::contains_component<T, AccessComponents...>::value) {
-                constexpr std::size_t position = component_position<T, AccessComponents...>();
-                return access_storages_[position];
-            } else {
-                static_assert(
-                    detail::contains_component<T, OptionalComponents...>::value,
-                    "component is not part of this ashiato view");
-                constexpr std::size_t position = component_position<T, OptionalComponents...>();
-                return optional_storages_[position];
-            }
-        }
+        return detail::query_storage<T>(state_);
     }
 
     template <typename T>
     const TypeErasedStorage* storage_for_type() const {
-        if constexpr (detail::contains_component<T, IterComponents...>::value) {
-            constexpr std::size_t position = component_position<T, IterComponents...>();
-            return iter_storages_[position];
-        } else {
-            if constexpr (detail::contains_component<T, AccessComponents...>::value) {
-                constexpr std::size_t position = component_position<T, AccessComponents...>();
-                return access_storages_[position];
-            } else {
-                static_assert(
-                    detail::contains_component<T, OptionalComponents...>::value,
-                    "component is not part of this ashiato view");
-                constexpr std::size_t position = component_position<T, OptionalComponents...>();
-                return optional_storages_[position];
-            }
-        }
+        return detail::query_storage<T>(state_);
     }
 
     template <typename T>
@@ -4004,7 +4490,7 @@ private:
                 target = previous;
             }
         } restore{active_callback_index_, previous_active_callback_index};
-        if constexpr (std::is_invocable<Fn&, AccessView&, Entity, component_ref_t<IterComponents>...>::value) {
+        if constexpr (std::is_invocable<Fn&, AccessView&, Entity, detail::component_ref_t<IterComponents>...>::value) {
             callback(*this, entity, component_ref<IterComponents>(index)...);
         } else {
             callback(entity, component_ref<IterComponents>(index)...);
@@ -4012,27 +4498,16 @@ private:
     }
 
     template <typename T>
-    component_ref_t<T> component_ref(std::uint32_t index) {
+    detail::component_ref_t<T> component_ref(std::uint32_t index) {
         TypeErasedStorage* storage = storage_for_type<T>();
         if constexpr (detail::is_singleton_query<T>::value) {
             index = entity_index(registry_->component_catalog_.singleton_entity);
         }
-        if constexpr (std::is_const<typename std::remove_reference<T>::type>::value) {
-            return *static_cast<const detail::component_query_t<T>*>(storage->get_unchecked(index));
-        } else {
-            void* value = TypeErasedStorage::range_dirty_deferred()
-                ? storage->write_unchecked_without_dirty(index)
-                : storage->write_unchecked(index);
-            return *static_cast<detail::component_query_t<T>*>(value);
-        }
+        return detail::query_component_ref<T>(*storage, index);
     }
 
     Registry* registry_;
-    mutable std::array<TypeErasedStorage*, sizeof...(IterComponents)> iter_storages_;
-    mutable std::array<TypeErasedStorage*, sizeof...(AccessComponents)> access_storages_;
-    mutable std::array<TypeErasedStorage*, sizeof...(OptionalComponents)> optional_storages_;
-    mutable GroupRecord* group_ = nullptr;
-    mutable std::uint64_t cache_token_ = 0;
+    mutable ResolvedState state_;
     std::uint32_t active_callback_index_ = invalid_index;
     bool job_callback_scope_ = false;
 };
@@ -4054,12 +4529,30 @@ class Registry::TagFilteredView<
           detail::type_list<AccessComponents...>,
           detail::type_list<OptionalComponents...>,
           detail::type_list<WithTags...>,
-          detail::type_list<WithoutTags...>>> {
+          detail::type_list<WithoutTags...>>>,
+      public detail::query_access_api<
+          TagFilteredView<
+              detail::type_list<IterComponents...>,
+              detail::type_list<AccessComponents...>,
+              detail::type_list<OptionalComponents...>,
+              detail::type_list<WithTags...>,
+              detail::type_list<WithoutTags...>>,
+          detail::type_list<IterComponents...>,
+          detail::type_list<AccessComponents...>,
+          detail::type_list<OptionalComponents...>> {
     static_assert((!detail::is_tag_query<IterComponents>::value && ...), "ashiato tags must be view filters");
     static_assert((!detail::is_tag_query<AccessComponents>::value && ...), "ashiato tags cannot be access components");
     static_assert((!detail::is_tag_query<OptionalComponents>::value && ...), "ashiato tags cannot be optional components");
     static_assert((detail::is_tag_query<WithTags>::value && ...), "ashiato with_tags types must be empty tags");
     static_assert((detail::is_tag_query<WithoutTags>::value && ...), "ashiato without_tags types must be empty tags");
+
+    using Spec = detail::query_spec<
+        detail::type_list<IterComponents...>,
+        detail::type_list<AccessComponents...>,
+        detail::type_list<OptionalComponents...>,
+        detail::type_list<WithTags...>,
+        detail::type_list<WithoutTags...>>;
+    using ResolvedState = detail::resolved_query_state<TypeErasedStorage, GroupRecord, Spec>;
 
 public:
     TagFilteredView(
@@ -4067,13 +4560,14 @@ public:
         std::array<TypeErasedStorage*, sizeof...(IterComponents)> iter_storages,
         std::array<TypeErasedStorage*, sizeof...(AccessComponents)> access_storages,
         std::array<TypeErasedStorage*, sizeof...(OptionalComponents)> optional_storages)
-        : registry_(&registry),
-          iter_storages_(iter_storages),
-          access_storages_(access_storages),
-          optional_storages_(optional_storages),
-          with_tag_storages_{{resolve_tag_storage<WithTags>(registry)...}},
-          without_tag_storages_{{resolve_tag_storage<WithoutTags>(registry)...}},
-          cache_token_(registry.storage_registry_.view_topology_token) {}
+        : registry_(&registry) {
+        state_.iter_storages = iter_storages;
+        state_.access_storages = access_storages;
+        state_.optional_storages = optional_storages;
+        state_.with_tag_storages = {{registry.resolve_query_tag_storage<WithTags>()...}};
+        state_.without_tag_storages = {{registry.resolve_query_tag_storage<WithoutTags>()...}};
+        state_.topology_token = registry.storage_registry_.view_topology_token;
+    }
 
     template <typename Fn>
     void each(Fn&& fn) {
@@ -4119,7 +4613,7 @@ public:
             detail::type_list<OptionalComponents...>,
             NextWith,
             detail::type_list<WithoutTags...>>
-            view(*registry_, iter_storages_, access_storages_, optional_storages_);
+            view(*registry_, state_.iter_storages, state_.access_storages, state_.optional_storages);
         copy_runtime_filters_to(view);
         return view;
     }
@@ -4154,7 +4648,7 @@ public:
             detail::type_list<OptionalComponents...>,
             detail::type_list<WithTags...>,
             NextWithout>
-            view(*registry_, iter_storages_, access_storages_, optional_storages_);
+            view(*registry_, state_.iter_storages, state_.access_storages, state_.optional_storages);
         copy_runtime_filters_to(view);
         return view;
     }
@@ -4172,162 +4666,6 @@ public:
         return view;
     }
 
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::contains_component<T, AccessComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    bool contains(Entity entity) const {
-        refresh_cache_if_needed();
-        if (!registry_->alive(entity)) {
-            return false;
-        }
-        const std::uint32_t index = entity_index(entity);
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        return storage != nullptr && storage->contains_index(index);
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::contains_component<T, IterComponents..., OptionalComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    bool contains() const {
-        refresh_cache_if_needed();
-        if (active_callback_index_ == invalid_index) {
-            return false;
-        }
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        return storage != nullptr && storage->contains_index(active_callback_index_);
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::contains_component<T, AccessComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    const detail::component_query_t<T>* try_get(Entity entity) const {
-        refresh_cache_if_needed();
-        if (!registry_->alive(entity)) {
-            return nullptr;
-        }
-        const std::uint32_t index = entity_index(entity);
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        return storage != nullptr
-            ? static_cast<const detail::component_query_t<T>*>(storage->get(index))
-            : nullptr;
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::contains_component<T, IterComponents..., OptionalComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    const detail::component_query_t<T>* try_get() const {
-        refresh_cache_if_needed();
-        if (active_callback_index_ == invalid_index) {
-            return nullptr;
-        }
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        return storage != nullptr
-            ? static_cast<const detail::component_query_t<T>*>(storage->get(active_callback_index_))
-            : nullptr;
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::contains_component<T, AccessComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    const detail::component_query_t<T>& get(Entity entity) const {
-        refresh_cache_if_needed();
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        assert(storage != nullptr);
-
-        return *static_cast<const detail::component_query_t<T>*>(storage->get_unchecked(entity_index(entity)));
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::contains_component<T, IterComponents..., OptionalComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    const detail::component_query_t<T>& get() const {
-        refresh_cache_if_needed();
-        assert(active_callback_index_ != invalid_index);
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        assert(storage != nullptr);
-
-        return *static_cast<const detail::component_query_t<T>*>(storage->get_unchecked(active_callback_index_));
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::is_singleton_query<T>::value &&
-                detail::contains_component<T, IterComponents..., AccessComponents...>::value,
-            int>::type = 0>
-    const detail::component_query_t<T>& get() const {
-        refresh_cache_if_needed();
-        const TypeErasedStorage* storage = storage_for_type<T>();
-        assert(storage != nullptr);
-
-        return *static_cast<const detail::component_query_t<T>*>(
-            storage->get_unchecked(entity_index(registry_->component_catalog_.singleton_entity)));
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            !std::is_const<typename std::remove_reference<T>::type>::value &&
-                detail::contains_mutable_component<T, AccessComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    detail::component_query_t<T>& write(Entity entity) {
-        refresh_cache_if_needed();
-        TypeErasedStorage* storage = storage_for_type<T>();
-        assert(storage != nullptr);
-
-        return *static_cast<detail::component_query_t<T>*>(storage->write_unchecked(entity_index(entity)));
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            !std::is_const<typename std::remove_reference<T>::type>::value &&
-                detail::contains_mutable_component<T, IterComponents..., OptionalComponents...>::value &&
-                !detail::is_singleton_query<T>::value,
-            int>::type = 0>
-    detail::component_query_t<T>& write() {
-        refresh_cache_if_needed();
-        assert(active_callback_index_ != invalid_index);
-        TypeErasedStorage* storage = storage_for_type<T>();
-        assert(storage != nullptr);
-
-        return *static_cast<detail::component_query_t<T>*>(storage->write_unchecked(active_callback_index_));
-    }
-
-    template <
-        typename T,
-        typename std::enable_if<
-            detail::is_singleton_query<T>::value &&
-                !std::is_const<typename std::remove_reference<T>::type>::value &&
-                detail::contains_mutable_component<T, IterComponents..., AccessComponents...>::value,
-            int>::type = 0>
-    detail::component_query_t<T>& write() {
-        refresh_cache_if_needed();
-        TypeErasedStorage* storage = storage_for_type<T>();
-        assert(storage != nullptr);
-
-        return *static_cast<detail::component_query_t<T>*>(
-            storage->write_unchecked(entity_index(registry_->component_catalog_.singleton_entity)));
-    }
 
     template <
         typename T,
@@ -4393,9 +4731,18 @@ public:
 
 private:
     friend class ViewIterationBase<TagFilteredView>;
+    friend class detail::query_access_api<
+        TagFilteredView,
+        detail::type_list<IterComponents...>,
+        detail::type_list<AccessComponents...>,
+        detail::type_list<OptionalComponents...>>;
 
     template <typename IterList, typename AccessList, typename OptionalList, typename WithList, typename WithoutList>
     friend class Registry::TagFilteredView;
+
+    std::uint32_t singleton_query_index() const {
+        return entity_index(registry_->component_catalog_.singleton_entity);
+    }
 
     std::size_t iteration_size(const TypeErasedStorage& driver) const {
         return driver.dense_size();
@@ -4436,34 +4783,6 @@ private:
         }
     }
 
-    template <typename T>
-    using component_ref_t = typename std::conditional<
-        std::is_const<typename std::remove_reference<T>::type>::value,
-        const detail::component_query_t<T>&,
-        detail::component_query_t<T>&>::type;
-
-    template <typename T, typename First, typename... Rest>
-    static constexpr std::size_t component_position() {
-        if constexpr (std::is_same<detail::component_query_t<T>, detail::component_query_t<First>>::value) {
-            return 0;
-        } else {
-            return 1 + component_position<T, Rest...>();
-        }
-    }
-
-    template <typename T>
-    static TypeErasedStorage* resolve_tag_storage(Registry& registry) {
-        const Entity tag = registry.registered_component<detail::component_query_t<T>>();
-        registry.require_tag_component(tag);
-        return registry.find_storage(tag);
-    }
-
-    template <typename T>
-    static TypeErasedStorage* resolve_storage(Registry& registry) {
-        const Entity component = registry.registered_component<detail::component_query_t<T>>();
-        return registry.find_storage(component);
-    }
-
     void append_runtime_tags(
         std::initializer_list<Entity> tags,
         std::vector<Entity>& target,
@@ -4484,16 +4803,9 @@ private:
     }
 
     void refresh_cache_if_needed() const {
-        if (cache_token_ == registry_->storage_registry_.view_topology_token) {
-            return;
+        if (registry_->refresh_query_state(state_, detail::ungrouped_query_cache{})) {
+            refresh_runtime_tag_storages();
         }
-        iter_storages_ = {{resolve_storage<IterComponents>(*registry_)...}};
-        access_storages_ = {{resolve_storage<AccessComponents>(*registry_)...}};
-        optional_storages_ = {{resolve_storage<OptionalComponents>(*registry_)...}};
-        with_tag_storages_ = {{resolve_tag_storage<WithTags>(*registry_)...}};
-        without_tag_storages_ = {{resolve_tag_storage<WithoutTags>(*registry_)...}};
-        refresh_runtime_tag_storages();
-        cache_token_ = registry_->storage_registry_.view_topology_token;
     }
 
     void refresh_runtime_tag_storages() const {
@@ -4511,31 +4823,11 @@ private:
     }
 
     TypeErasedStorage* driver_storage() const {
-        TypeErasedStorage* driver = nullptr;
-        if constexpr (sizeof...(IterComponents) > 0) {
-            constexpr bool singleton_flags[] = {detail::is_singleton_query<IterComponents>::value...};
-            for (std::size_t position = 0; position < iter_storages_.size(); ++position) {
-                TypeErasedStorage* storage = iter_storages_[position];
-                if (singleton_flags[position]) {
-                    continue;
-                }
-                if (storage == nullptr) {
-                    return nullptr;
-                }
-                if (driver == nullptr || storage->dense_size() < driver->dense_size()) {
-                    driver = storage;
-                }
-            }
-        }
-
-        for (TypeErasedStorage* storage : with_tag_storages_) {
-            if (storage == nullptr) {
-                return nullptr;
-            }
-            if (driver == nullptr || storage->dense_size() < driver->dense_size()) {
-                driver = storage;
-            }
-        }
+        TypeErasedStorage* driver = detail::select_query_driver(
+            state_.iter_storages,
+            detail::type_list<IterComponents...>{},
+            state_.with_tag_storages,
+            detail::type_list<WithTags...>{});
 
         for (TypeErasedStorage* storage : runtime_with_tag_storages_) {
             if (storage == nullptr) {
@@ -4550,27 +4842,13 @@ private:
     }
 
     bool contains_all(std::uint32_t index) const {
-        if constexpr (sizeof...(IterComponents) > 0) {
-            constexpr bool singleton_flags[] = {detail::is_singleton_query<IterComponents>::value...};
-            for (std::size_t position = 0; position < iter_storages_.size(); ++position) {
-                const TypeErasedStorage* storage = iter_storages_[position];
-                if (singleton_flags[position]) {
-                    continue;
-                }
-                if (storage == nullptr || !storage->contains_index(index)) {
-                    return false;
-                }
-            }
-        }
-        for (const TypeErasedStorage* storage : with_tag_storages_) {
-            if (storage == nullptr || !storage->contains_index(index)) {
-                return false;
-            }
-        }
-        for (const TypeErasedStorage* storage : without_tag_storages_) {
-            if (storage != nullptr && storage->contains_index(index)) {
-                return false;
-            }
+        if (!detail::query_contains_required(
+                state_.iter_storages,
+                index,
+                detail::type_list<IterComponents...>{}) ||
+            !detail::query_contains_included(state_.with_tag_storages, index) ||
+            !detail::query_contains_excluded(state_.without_tag_storages, index)) {
+            return false;
         }
         for (const TypeErasedStorage* storage : runtime_with_tag_storages_) {
             if (storage == nullptr || !storage->contains_index(index)) {
@@ -4587,40 +4865,12 @@ private:
 
     template <typename T>
     TypeErasedStorage* storage_for_type() {
-        if constexpr (detail::contains_component<T, IterComponents...>::value) {
-            constexpr std::size_t position = component_position<T, IterComponents...>();
-            return iter_storages_[position];
-        } else {
-            if constexpr (detail::contains_component<T, AccessComponents...>::value) {
-                constexpr std::size_t position = component_position<T, AccessComponents...>();
-                return access_storages_[position];
-            } else {
-                static_assert(
-                    detail::contains_component<T, OptionalComponents...>::value,
-                    "component is not part of this ashiato view");
-                constexpr std::size_t position = component_position<T, OptionalComponents...>();
-                return optional_storages_[position];
-            }
-        }
+        return detail::query_storage<T>(state_);
     }
 
     template <typename T>
     const TypeErasedStorage* storage_for_type() const {
-        if constexpr (detail::contains_component<T, IterComponents...>::value) {
-            constexpr std::size_t position = component_position<T, IterComponents...>();
-            return iter_storages_[position];
-        } else {
-            if constexpr (detail::contains_component<T, AccessComponents...>::value) {
-                constexpr std::size_t position = component_position<T, AccessComponents...>();
-                return access_storages_[position];
-            } else {
-                static_assert(
-                    detail::contains_component<T, OptionalComponents...>::value,
-                    "component is not part of this ashiato view");
-                constexpr std::size_t position = component_position<T, OptionalComponents...>();
-                return optional_storages_[position];
-            }
-        }
+        return detail::query_storage<T>(state_);
     }
 
     template <typename T>
@@ -4657,7 +4907,8 @@ private:
                 target = previous;
             }
         } restore{active_callback_index_, previous_active_callback_index};
-        if constexpr (std::is_invocable<Fn&, TagFilteredView&, Entity, component_ref_t<IterComponents>...>::value) {
+        if constexpr (
+            std::is_invocable<Fn&, TagFilteredView&, Entity, detail::component_ref_t<IterComponents>...>::value) {
             callback(*this, entity, component_ref<IterComponents>(index)...);
         } else {
             callback(entity, component_ref<IterComponents>(index)...);
@@ -4665,32 +4916,20 @@ private:
     }
 
     template <typename T>
-    component_ref_t<T> component_ref(std::uint32_t index) {
+    detail::component_ref_t<T> component_ref(std::uint32_t index) {
         TypeErasedStorage* storage = storage_for_type<T>();
         if constexpr (detail::is_singleton_query<T>::value) {
             index = entity_index(registry_->component_catalog_.singleton_entity);
         }
-        if constexpr (std::is_const<typename std::remove_reference<T>::type>::value) {
-            return *static_cast<const detail::component_query_t<T>*>(storage->get_unchecked(index));
-        } else {
-            void* value = TypeErasedStorage::range_dirty_deferred()
-                ? storage->write_unchecked_without_dirty(index)
-                : storage->write_unchecked(index);
-            return *static_cast<detail::component_query_t<T>*>(value);
-        }
+        return detail::query_component_ref<T>(*storage, index);
     }
 
     Registry* registry_;
-    mutable std::array<TypeErasedStorage*, sizeof...(IterComponents)> iter_storages_;
-    mutable std::array<TypeErasedStorage*, sizeof...(AccessComponents)> access_storages_;
-    mutable std::array<TypeErasedStorage*, sizeof...(OptionalComponents)> optional_storages_;
-    mutable std::array<TypeErasedStorage*, sizeof...(WithTags)> with_tag_storages_;
-    mutable std::array<TypeErasedStorage*, sizeof...(WithoutTags)> without_tag_storages_;
+    mutable ResolvedState state_;
     std::vector<Entity> runtime_with_tags_;
     std::vector<Entity> runtime_without_tags_;
     mutable std::vector<TypeErasedStorage*> runtime_with_tag_storages_;
     mutable std::vector<TypeErasedStorage*> runtime_without_tag_storages_;
-    mutable std::uint64_t cache_token_ = 0;
     std::uint32_t active_callback_index_ = invalid_index;
     bool job_callback_scope_ = false;
 };
@@ -4968,62 +5207,45 @@ class Registry::JobTagFilteredView<
     detail::type_list<AccessComponents...>,
     detail::type_list<OptionalComponents...>,
     detail::type_list<WithTags...>,
-    detail::type_list<WithoutTags...>> {
+    detail::type_list<WithoutTags...>>
+    : public ThreadedJobBuilderBase<
+          JobTagFilteredView<
+              detail::type_list<IterComponents...>,
+              detail::type_list<AccessComponents...>,
+              detail::type_list<OptionalComponents...>,
+              detail::type_list<WithTags...>,
+              detail::type_list<WithoutTags...>>,
+          sizeof...(AccessComponents) == 0> {
+    using Self = JobTagFilteredView<
+        detail::type_list<IterComponents...>,
+        detail::type_list<AccessComponents...>,
+        detail::type_list<OptionalComponents...>,
+        detail::type_list<WithTags...>,
+        detail::type_list<WithoutTags...>>;
+    using Base = ThreadedJobBuilderBase<Self, sizeof...(AccessComponents) == 0>;
+    using Base::name_;
+    using Base::order_;
+    using Base::registry_;
+    using Base::threading_;
+
 public:
     JobTagFilteredView(Registry& registry, int order, JobThreadingOptions threading = {}, std::string name = {})
-        : registry_(&registry), order_(order), threading_(threading), name_(std::move(name)) {}
-
-    JobTagFilteredView& name(std::string value) {
-        name_ = std::move(value);
-        return *this;
-    }
-
-    JobTagFilteredView& max_threads(std::size_t count) {
-        static_assert(sizeof...(AccessComponents) == 0, "ashiato access_other_entities jobs must be single threaded");
-        threading_.max_threads = std::max<std::size_t>(count, 1);
-        threading_.single_thread = false;
-        return *this;
-    }
-
-    JobTagFilteredView& single_thread() {
-        threading_.max_threads = 1;
-        threading_.single_thread = true;
-        return *this;
-    }
-
-    JobTagFilteredView& min_entities_per_thread(std::size_t count) {
-        threading_.min_entities_per_thread = std::max<std::size_t>(count, 1);
-        return *this;
-    }
+        : Base(registry, order, threading, std::move(name)) {}
 
     template <typename Fn>
     Entity each(Fn&& fn) {
-        using Callback = typename std::decay<Fn>::type;
-        auto callback = std::make_shared<Callback>(std::forward<Fn>(fn));
-        JobAccessMetadata metadata = registry_->template make_job_access_metadata<IterComponents..., OptionalComponents...>();
-        registry_->template append_job_external_access_metadata<AccessComponents...>(metadata);
-        registry_->template append_job_with_filter_metadata<WithTags...>(metadata);
-        registry_->template append_job_without_filter_metadata<WithoutTags...>(metadata);
-        return registry_->add_job(
+        using Spec = detail::query_spec<
+            detail::type_list<IterComponents...>,
+            detail::type_list<AccessComponents...>,
+            detail::type_list<OptionalComponents...>,
+            detail::type_list<WithTags...>,
+            detail::type_list<WithoutTags...>>;
+        return registry_->register_query_job(
             order_,
             name_,
-            std::move(metadata),
-            [callback](Registry& registry) mutable {
-                auto view = make_view(registry);
-                view.job_callback_scope().each_reverse(*callback);
-            },
-            [](Registry& registry) {
-                auto view = make_view(registry);
-                return view.matching_indices();
-            },
-            [callback](Registry& registry, const std::vector<std::uint32_t>& indices, std::size_t begin, std::size_t end)
-                mutable {
-                    auto view = make_view(registry);
-                    view.job_callback_scope().each_index_range(*callback, indices, begin, end);
-                },
-            registry_->template make_job_range_dirty_writes<IterComponents...>(),
             threading_,
-            false);
+            std::forward<Fn>(fn),
+            Spec{});
     }
 
     template <typename... Tags>
@@ -5220,10 +5442,6 @@ private:
         }
     }
 
-    Registry* registry_;
-    int order_ = 0;
-    JobThreadingOptions threading_;
-    std::string name_;
 };
 
 template <
@@ -5240,167 +5458,80 @@ class Registry::JobTagFilteredStructuralView<
     detail::type_list<WithTags...>,
     detail::type_list<WithoutTags...>,
     detail::type_list<StructuralComponents...>,
-    StructuralPolicy> {
+    StructuralPolicy>
+    : public JobBuilderBase<JobTagFilteredStructuralView<
+          detail::type_list<IterComponents...>,
+          detail::type_list<AccessComponents...>,
+          detail::type_list<>,
+          detail::type_list<WithTags...>,
+          detail::type_list<WithoutTags...>,
+          detail::type_list<StructuralComponents...>,
+          StructuralPolicy>> {
+    using Self = JobTagFilteredStructuralView<
+        detail::type_list<IterComponents...>,
+        detail::type_list<AccessComponents...>,
+        detail::type_list<>,
+        detail::type_list<WithTags...>,
+        detail::type_list<WithoutTags...>,
+        detail::type_list<StructuralComponents...>,
+        StructuralPolicy>;
+    using Base = JobBuilderBase<Self>;
+    using Base::name_;
+    using Base::order_;
+    using Base::registry_;
+    using Base::threading_;
+
 public:
     JobTagFilteredStructuralView(Registry& registry, int order, JobThreadingOptions threading, std::string name = {})
-        : registry_(&registry), order_(order), threading_(threading), name_(std::move(name)) {}
-
-    JobTagFilteredStructuralView& name(std::string value) {
-        name_ = std::move(value);
-        return *this;
-    }
+        : Base(registry, order, threading, std::move(name)) {}
 
     template <typename Fn>
     Entity each(Fn&& fn) {
-        using Callback = typename std::decay<Fn>::type;
-        auto callback = std::make_shared<Callback>(std::forward<Fn>(fn));
-        JobAccessMetadata metadata = registry_->template make_job_access_metadata<IterComponents...>();
-        registry_->template append_job_external_access_metadata<AccessComponents...>(metadata);
-        registry_->template append_job_with_filter_metadata<WithTags...>(metadata);
-        registry_->template append_job_without_filter_metadata<WithoutTags...>(metadata);
-        registry_->template append_job_structural_metadata<StructuralComponents...>(metadata);
-        auto hook_cache = std::make_shared<ComponentLifecycleHookMatchCache>();
-        std::vector<std::uint32_t> structural_components =
-            registry_->template make_job_structural_components<StructuralComponents...>();
-        threading_.single_thread = true;
-        threading_.max_threads = 1;
-        return registry_->add_job(
+        using Spec = detail::query_spec<
+            detail::type_list<IterComponents...>,
+            detail::type_list<AccessComponents...>,
+            detail::type_list<>,
+            detail::type_list<WithTags...>,
+            detail::type_list<WithoutTags...>>;
+        return registry_->template register_structural_query_job<StructuralPolicy>(
             order_,
             name_,
-            std::move(metadata),
-            [callback, hook_cache, structural_components](Registry& registry) mutable {
-                auto view = make_view(registry);
-                if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
-                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                        using Context =
-                            JobStructuralContext<true, StructuralPolicy::value, ActiveView, StructuralComponents...>;
-                        Context context(registry, active_view, entity);
-                        detail::invoke_job_context_callback(*callback, context, entity, components...);
-                    };
-                    registry.template each_structural_job<StructuralPolicy::value>(registry, view, adapter);
-                } else {
-                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                        using Context =
-                            JobStructuralContext<false, StructuralPolicy::value, ActiveView, StructuralComponents...>;
-                        Context context(registry, active_view, entity);
-                        detail::invoke_job_context_callback(*callback, context, entity, components...);
-                    };
-                    registry.template each_structural_job<StructuralPolicy::value>(registry, view, adapter);
-                }
-            },
-            [](Registry& registry) {
-                auto view = make_view(registry);
-                return view.matching_indices();
-            },
-            [callback, hook_cache, structural_components](
-                Registry& registry,
-                const std::vector<std::uint32_t>& indices,
-                std::size_t begin,
-                std::size_t end) mutable {
-                    auto view = make_view(registry);
-                    if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
-                        auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                            using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                            using Context =
-                                JobStructuralContext<true, StructuralPolicy::value, ActiveView, StructuralComponents...>;
-                            Context context(registry, active_view, entity);
-                            detail::invoke_job_context_callback(*callback, context, entity, components...);
-                        };
-                        registry.template each_structural_job_range<StructuralPolicy::value>(
-                            registry, view, adapter, indices, begin, end);
-                    } else {
-                        auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                            using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                            using Context =
-                                JobStructuralContext<false, StructuralPolicy::value, ActiveView, StructuralComponents...>;
-                            Context context(registry, active_view, entity);
-                            detail::invoke_job_context_callback(*callback, context, entity, components...);
-                        };
-                        registry.template each_structural_job_range<StructuralPolicy::value>(
-                            registry, view, adapter, indices, begin, end);
-                    }
-                },
-            registry_->template make_job_range_dirty_writes<IterComponents...>(),
             threading_,
-            true,
-            StructuralPolicy::value);
+            std::forward<Fn>(fn),
+            Spec{},
+            detail::type_list<StructuralComponents...>{},
+            StructuralPolicy{});
     }
 
-private:
-    static auto make_view(Registry& registry) {
-        if constexpr (sizeof...(AccessComponents) == 0) {
-            return registry.template view<IterComponents...>()
-                .template with_tags<WithTags...>()
-                .template without_tags<WithoutTags...>();
-        } else {
-            return registry.template view<IterComponents...>()
-                .template access<AccessComponents...>()
-                .template with_tags<WithTags...>()
-                .template without_tags<WithoutTags...>();
-        }
-    }
-
-    Registry* registry_;
-    int order_ = 0;
-    JobThreadingOptions threading_;
-    std::string name_;
 };
 
 template <typename... Components>
-class Registry::JobView {
+class Registry::JobView : public ThreadedJobBuilderBase<JobView<Components...>, true> {
     static_assert(sizeof...(Components) > 0, "ashiato jobs require at least one component");
+    using Base = ThreadedJobBuilderBase<JobView<Components...>, true>;
+    using Base::name_;
+    using Base::order_;
+    using Base::registry_;
+    using Base::threading_;
 
 public:
     JobView(Registry& registry, int order)
-        : registry_(&registry), order_(order), view_(registry) {}
-
-    JobView& name(std::string value) {
-        name_ = std::move(value);
-        return *this;
-    }
-
-    JobView& max_threads(std::size_t count) {
-        threading_.max_threads = std::max<std::size_t>(count, 1);
-        threading_.single_thread = false;
-        return *this;
-    }
-
-    JobView& single_thread() {
-        threading_.max_threads = 1;
-        threading_.single_thread = true;
-        return *this;
-    }
-
-    JobView& min_entities_per_thread(std::size_t count) {
-        threading_.min_entities_per_thread = std::max<std::size_t>(count, 1);
-        return *this;
-    }
+        : Base(registry, order), view_(registry) {}
 
     template <typename Fn>
     Entity each(Fn&& fn) {
-        using Callback = typename std::decay<Fn>::type;
-        auto callback = std::make_shared<Callback>(std::forward<Fn>(fn));
-        return registry_->add_job(
+        using Spec = detail::query_spec<
+            detail::type_list<Components...>,
+            detail::type_list<>,
+            detail::type_list<>,
+            detail::type_list<>,
+            detail::type_list<>>;
+        return registry_->register_query_job(
             order_,
             name_,
-            registry_->template make_job_access_metadata<Components...>(),
-            [callback](Registry& registry) mutable {
-                auto view = registry.template view<Components...>();
-                view.job_callback_scope().each_reverse(*callback);
-            },
-            [](Registry& registry) {
-                return registry.template view<Components...>().matching_indices();
-            },
-            [callback](Registry& registry, const std::vector<std::uint32_t>& indices, std::size_t begin, std::size_t end)
-                mutable {
-                    auto view = registry.template view<Components...>();
-                    view.job_callback_scope().each_index_range(*callback, indices, begin, end);
-                },
-            registry_->template make_job_range_dirty_writes<Components...>(),
             threading_,
-            false);
+            std::forward<Fn>(fn),
+            Spec{});
     }
 
     template <typename... AccessComponents>
@@ -5541,18 +5672,30 @@ public:
     }
 
 private:
-    Registry* registry_;
-    int order_ = 0;
     View<Components...> view_;
-    JobThreadingOptions threading_;
-    std::string name_;
 };
 
 template <typename... IterComponents, typename... AccessComponents, typename... OptionalComponents>
 class Registry::JobAccessView<
     detail::type_list<IterComponents...>,
     detail::type_list<AccessComponents...>,
-    detail::type_list<OptionalComponents...>> {
+    detail::type_list<OptionalComponents...>>
+    : public ThreadedJobBuilderBase<
+          JobAccessView<
+              detail::type_list<IterComponents...>,
+              detail::type_list<AccessComponents...>,
+              detail::type_list<OptionalComponents...>>,
+          sizeof...(AccessComponents) == 0> {
+    using Self = JobAccessView<
+        detail::type_list<IterComponents...>,
+        detail::type_list<AccessComponents...>,
+        detail::type_list<OptionalComponents...>>;
+    using Base = ThreadedJobBuilderBase<Self, sizeof...(AccessComponents) == 0>;
+    using Base::name_;
+    using Base::order_;
+    using Base::registry_;
+    using Base::threading_;
+
 public:
     using ActiveView = AccessView<
         detail::type_list<IterComponents...>,
@@ -5565,30 +5708,7 @@ public:
         ActiveView view,
         JobThreadingOptions threading,
         std::string name = {})
-        : registry_(&registry), order_(order), view_(std::move(view)), threading_(threading), name_(std::move(name)) {}
-
-    JobAccessView& name(std::string value) {
-        name_ = std::move(value);
-        return *this;
-    }
-
-    JobAccessView& max_threads(std::size_t count) {
-        static_assert(sizeof...(AccessComponents) == 0, "ashiato access_other_entities jobs must be single threaded");
-        threading_.max_threads = std::max<std::size_t>(count, 1);
-        threading_.single_thread = false;
-        return *this;
-    }
-
-    JobAccessView& single_thread() {
-        threading_.max_threads = 1;
-        threading_.single_thread = true;
-        return *this;
-    }
-
-    JobAccessView& min_entities_per_thread(std::size_t count) {
-        threading_.min_entities_per_thread = std::max<std::size_t>(count, 1);
-        return *this;
-    }
+        : Base(registry, order, threading, std::move(name)), view_(std::move(view)) {}
 
     template <typename... MoreAccessComponents>
     auto access_other_entities() const
@@ -5642,30 +5762,18 @@ public:
 
     template <typename Fn>
     Entity each(Fn&& fn) {
-        using Callback = typename std::decay<Fn>::type;
-        auto callback = std::make_shared<Callback>(std::forward<Fn>(fn));
-        JobAccessMetadata metadata = registry_->template make_job_access_metadata<IterComponents..., OptionalComponents...>();
-        registry_->template append_job_external_access_metadata<AccessComponents...>(metadata);
-        return registry_->add_job(
+        using Spec = detail::query_spec<
+            detail::type_list<IterComponents...>,
+            detail::type_list<AccessComponents...>,
+            detail::type_list<OptionalComponents...>,
+            detail::type_list<>,
+            detail::type_list<>>;
+        return registry_->register_query_job(
             order_,
             name_,
-            std::move(metadata),
-            [callback](Registry& registry) mutable {
-                auto view = make_view(registry);
-                view.job_callback_scope().each_reverse(*callback);
-            },
-            [](Registry& registry) {
-                auto view = make_view(registry);
-                return view.matching_indices();
-            },
-            [callback](Registry& registry, const std::vector<std::uint32_t>& indices, std::size_t begin, std::size_t end)
-                mutable {
-                    auto view = make_view(registry);
-                    view.job_callback_scope().each_index_range(*callback, indices, begin, end);
-                },
-            registry_->template make_job_range_dirty_writes<IterComponents...>(),
             threading_,
-            false);
+            std::forward<Fn>(fn),
+            Spec{});
     }
 
     template <typename... StructuralComponents>
@@ -5779,123 +5887,53 @@ public:
     }
 
 private:
-    static auto make_view(Registry& registry) {
-        if constexpr (sizeof...(AccessComponents) == 0 && sizeof...(OptionalComponents) == 0) {
-            return registry.template view<IterComponents...>();
-        } else if constexpr (sizeof...(AccessComponents) == 0) {
-            return registry.template view<IterComponents...>().template optional<OptionalComponents...>();
-        } else if constexpr (sizeof...(OptionalComponents) == 0) {
-            return registry.template view<IterComponents...>().template access<AccessComponents...>();
-        } else {
-            return registry.template view<IterComponents...>()
-                .template access<AccessComponents...>()
-                .template optional<OptionalComponents...>();
-        }
-    }
-
-    Registry* registry_;
-    int order_ = 0;
     AccessView<
         detail::type_list<IterComponents...>,
         detail::type_list<AccessComponents...>,
         detail::type_list<OptionalComponents...>> view_;
-    JobThreadingOptions threading_;
-    std::string name_;
 };
 
 template <typename StructuralPolicy, typename... IterComponents, typename... StructuralComponents>
 class Registry::JobStructuralView<
     detail::type_list<IterComponents...>,
     detail::type_list<StructuralComponents...>,
-    StructuralPolicy> {
+    StructuralPolicy>
+    : public JobBuilderBase<JobStructuralView<
+          detail::type_list<IterComponents...>,
+          detail::type_list<StructuralComponents...>,
+          StructuralPolicy>> {
+    using Self = JobStructuralView<
+        detail::type_list<IterComponents...>,
+        detail::type_list<StructuralComponents...>,
+        StructuralPolicy>;
+    using Base = JobBuilderBase<Self>;
+    using Base::name_;
+    using Base::order_;
+    using Base::registry_;
+    using Base::threading_;
+
 public:
     JobStructuralView(Registry& registry, int order, JobThreadingOptions threading, std::string name = {})
-        : registry_(&registry), order_(order), threading_(threading), name_(std::move(name)) {}
-
-    JobStructuralView& name(std::string value) {
-        name_ = std::move(value);
-        return *this;
-    }
+        : Base(registry, order, threading, std::move(name)) {}
 
     template <typename Fn>
     Entity each(Fn&& fn) {
-        using Callback = typename std::decay<Fn>::type;
-        auto callback = std::make_shared<Callback>(std::forward<Fn>(fn));
-        JobAccessMetadata metadata = registry_->template make_job_access_metadata<IterComponents...>();
-        registry_->template append_job_structural_metadata<StructuralComponents...>(metadata);
-        auto hook_cache = std::make_shared<ComponentLifecycleHookMatchCache>();
-        std::vector<std::uint32_t> structural_components =
-            registry_->template make_job_structural_components<StructuralComponents...>();
-        threading_.single_thread = true;
-        threading_.max_threads = 1;
-        return registry_->add_job(
+        using Spec = detail::query_spec<
+            detail::type_list<IterComponents...>,
+            detail::type_list<>,
+            detail::type_list<>,
+            detail::type_list<>,
+            detail::type_list<>>;
+        return registry_->template register_structural_query_job<StructuralPolicy>(
             order_,
             name_,
-            std::move(metadata),
-            [callback, hook_cache, structural_components](Registry& registry) mutable {
-                auto view = registry.template view<IterComponents...>();
-                if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
-                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                        using Context =
-                            JobStructuralContext<true, StructuralPolicy::value, ActiveView, StructuralComponents...>;
-                        Context context(registry, active_view, entity);
-                        detail::invoke_job_context_callback(*callback, context, entity, components...);
-                    };
-                    registry.template each_structural_job<StructuralPolicy::value>(registry, view, adapter);
-                } else {
-                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                        using Context =
-                            JobStructuralContext<false, StructuralPolicy::value, ActiveView, StructuralComponents...>;
-                        Context context(registry, active_view, entity);
-                        detail::invoke_job_context_callback(*callback, context, entity, components...);
-                    };
-                    registry.template each_structural_job<StructuralPolicy::value>(registry, view, adapter);
-                }
-            },
-            [](Registry& registry) {
-                return registry.template view<IterComponents...>().matching_indices();
-            },
-            [callback, hook_cache, structural_components](
-                Registry& registry,
-                const std::vector<std::uint32_t>& indices,
-                std::size_t begin,
-                std::size_t end) mutable {
-                    auto view = registry.template view<IterComponents...>();
-                    if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
-                        auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                            using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                            using Context =
-                                JobStructuralContext<true, StructuralPolicy::value, ActiveView, StructuralComponents...>;
-                            Context context(registry, active_view, entity);
-                            detail::invoke_job_context_callback(*callback, context, entity, components...);
-                        };
-                        registry.template each_structural_job_range<StructuralPolicy::value>(
-                            registry, view, adapter, indices, begin, end);
-                    } else {
-                        auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                            using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                            using Context =
-                                JobStructuralContext<false, StructuralPolicy::value, ActiveView, StructuralComponents...>;
-                            Context context(registry, active_view, entity);
-                            detail::invoke_job_context_callback(*callback, context, entity, components...);
-                        };
-                        registry.template each_structural_job_range<StructuralPolicy::value>(
-                            registry, view, adapter, indices, begin, end);
-                    }
-                },
-            registry_->template make_job_range_dirty_writes<IterComponents...>(),
             threading_,
-            true,
-            StructuralPolicy::value);
+            std::forward<Fn>(fn),
+            Spec{},
+            detail::type_list<StructuralComponents...>{},
+            StructuralPolicy{});
     }
 
-private:
-    Registry* registry_;
-    int order_ = 0;
-    JobThreadingOptions threading_;
-    std::string name_;
 };
 
 template <
@@ -5909,98 +5947,47 @@ class Registry::JobStructuralAccessView<
     detail::type_list<AccessComponents...>,
     detail::type_list<OptionalComponents...>,
     detail::type_list<StructuralComponents...>,
-    StructuralPolicy> {
+    StructuralPolicy>
+    : public JobBuilderBase<JobStructuralAccessView<
+          detail::type_list<IterComponents...>,
+          detail::type_list<AccessComponents...>,
+          detail::type_list<OptionalComponents...>,
+          detail::type_list<StructuralComponents...>,
+          StructuralPolicy>> {
+    using Self = JobStructuralAccessView<
+        detail::type_list<IterComponents...>,
+        detail::type_list<AccessComponents...>,
+        detail::type_list<OptionalComponents...>,
+        detail::type_list<StructuralComponents...>,
+        StructuralPolicy>;
+    using Base = JobBuilderBase<Self>;
+    using Base::name_;
+    using Base::order_;
+    using Base::registry_;
+    using Base::threading_;
+
 public:
     JobStructuralAccessView(Registry& registry, int order, JobThreadingOptions threading, std::string name = {})
-        : registry_(&registry), order_(order), threading_(threading), name_(std::move(name)) {}
-
-    JobStructuralAccessView& name(std::string value) {
-        name_ = std::move(value);
-        return *this;
-    }
+        : Base(registry, order, threading, std::move(name)) {}
 
     template <typename Fn>
     Entity each(Fn&& fn) {
-        using Callback = typename std::decay<Fn>::type;
-        auto callback = std::make_shared<Callback>(std::forward<Fn>(fn));
-        JobAccessMetadata metadata = registry_->template make_job_access_metadata<IterComponents..., OptionalComponents...>();
-        registry_->template append_job_external_access_metadata<AccessComponents...>(metadata);
-        registry_->template append_job_structural_metadata<StructuralComponents...>(metadata);
-        auto hook_cache = std::make_shared<ComponentLifecycleHookMatchCache>();
-        std::vector<std::uint32_t> structural_components =
-            registry_->template make_job_structural_components<StructuralComponents...>();
-        threading_.single_thread = true;
-        threading_.max_threads = 1;
-        return registry_->add_job(
+        using Spec = detail::query_spec<
+            detail::type_list<IterComponents...>,
+            detail::type_list<AccessComponents...>,
+            detail::type_list<OptionalComponents...>,
+            detail::type_list<>,
+            detail::type_list<>>;
+        return registry_->template register_structural_query_job<StructuralPolicy>(
             order_,
             name_,
-            std::move(metadata),
-            [callback, hook_cache, structural_components](Registry& registry) mutable {
-                auto view = registry.template view<IterComponents...>().template access<AccessComponents...>();
-                if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
-                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                        using Context =
-                            JobStructuralContext<true, StructuralPolicy::value, ActiveView, StructuralComponents...>;
-                        Context context(registry, active_view, entity);
-                        detail::invoke_job_context_callback(*callback, context, entity, components...);
-                    };
-                    registry.template each_structural_job<StructuralPolicy::value>(registry, view, adapter);
-                } else {
-                    auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                        using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                        using Context =
-                            JobStructuralContext<false, StructuralPolicy::value, ActiveView, StructuralComponents...>;
-                        Context context(registry, active_view, entity);
-                        detail::invoke_job_context_callback(*callback, context, entity, components...);
-                    };
-                    registry.template each_structural_job<StructuralPolicy::value>(registry, view, adapter);
-                }
-            },
-            [](Registry& registry) {
-                return registry.template view<IterComponents...>()
-                    .template access<AccessComponents...>()
-                    .matching_indices();
-            },
-            [callback, hook_cache, structural_components](
-                Registry& registry,
-                const std::vector<std::uint32_t>& indices,
-                std::size_t begin,
-                std::size_t end) mutable {
-                    auto view = registry.template view<IterComponents...>().template access<AccessComponents...>();
-                    if (registry.component_lifecycle_hooks_match(structural_components, *hook_cache)) {
-                        auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                            using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                            using Context =
-                                JobStructuralContext<true, StructuralPolicy::value, ActiveView, StructuralComponents...>;
-                            Context context(registry, active_view, entity);
-                            detail::invoke_job_context_callback(*callback, context, entity, components...);
-                        };
-                        registry.template each_structural_job_range<StructuralPolicy::value>(
-                            registry, view, adapter, indices, begin, end);
-                    } else {
-                        auto adapter = [callback, &registry](auto& active_view, Entity entity, auto&... components) mutable {
-                            using ActiveView = typename std::remove_reference<decltype(active_view)>::type;
-                            using Context =
-                                JobStructuralContext<false, StructuralPolicy::value, ActiveView, StructuralComponents...>;
-                            Context context(registry, active_view, entity);
-                            detail::invoke_job_context_callback(*callback, context, entity, components...);
-                        };
-                        registry.template each_structural_job_range<StructuralPolicy::value>(
-                            registry, view, adapter, indices, begin, end);
-                    }
-                },
-            registry_->template make_job_range_dirty_writes<IterComponents...>(),
             threading_,
-            true,
-            StructuralPolicy::value);
+            std::forward<Fn>(fn),
+            Spec{},
+            detail::type_list<StructuralComponents...>{},
+            StructuralPolicy{});
     }
 
-private:
-    Registry* registry_;
-    int order_ = 0;
-    JobThreadingOptions threading_;
-    std::string name_;
 };
 
 template <typename... Components>

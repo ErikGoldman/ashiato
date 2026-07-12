@@ -35,7 +35,7 @@ void register_game_time_fields(ashiato::Registry& registry) {
 #ifndef _WIN32
 namespace {
 
-std::string post_graphql(ashiato::DebugServer& server, const std::string& body) {
+int connect_client(ashiato::DebugServer& server) {
     const int client = socket(AF_INET, SOCK_STREAM, 0);
     REQUIRE(client >= 0);
 
@@ -47,6 +47,11 @@ std::string post_graphql(ashiato::DebugServer& server, const std::string& body) 
     const int flags = fcntl(client, F_GETFL, 0);
     REQUIRE(flags >= 0);
     REQUIRE(fcntl(client, F_SETFL, flags | O_NONBLOCK) == 0);
+    return client;
+}
+
+std::string post_graphql(ashiato::DebugServer& server, const std::string& body) {
+    const int client = connect_client(server);
 
     const std::string request =
         "POST /graphql HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: " +
@@ -232,6 +237,22 @@ TEST_CASE("debug server responds to a loopback GraphQL request") {
     REQUIRE(name_response.find("200 OK") != std::string::npos);
     REQUIRE(name_response.find("\"serverName\":\"client 1\"") != std::string::npos);
 
+    for (const std::string& invalid_value : {std::string{"1.5"}, std::string{"2147483648"}}) {
+        const std::string invalid_position_body =
+            "{\"query\":\"mutation { setComponent }\",\"variables\":{\"entity\":\"" +
+            std::to_string(entity.value) + "\",\"component\":\"" +
+            std::to_string(registry.component<Position>().value) + "\",\"value\":{\"x\":" + invalid_value + "}}}";
+        const std::string invalid_position_response = post_graphql(server, invalid_position_body);
+        REQUIRE(invalid_position_response.find("invalid component field value") != std::string::npos);
+        REQUIRE(registry.get<Position>(entity).x == 5);
+    }
+    const std::string valid_position_body =
+        "{\"query\":\"mutation { setComponent }\",\"variables\":{\"entity\":\"" +
+        std::to_string(entity.value) + "\",\"component\":\"" +
+        std::to_string(registry.component<Position>().value) + "\",\"value\":{\"x\":-7}}}";
+    REQUIRE(post_graphql(server, valid_position_body).find("\"value\":\"-7\"") != std::string::npos);
+    REQUIRE(registry.get<Position>(entity).x == -7);
+
     const std::string entities_response =
         post_graphql(server, "{\"query\":\"query { entities { id index version kind displayName } }\"}");
     REQUIRE(entities_response.find("\"displayName\":\"hero\"") != std::string::npos);
@@ -248,5 +269,34 @@ TEST_CASE("debug server responds to a loopback GraphQL request") {
     REQUIRE(singletons_response.find("\"singleton\":true") != std::string::npos);
     REQUIRE(singletons_response.find("\"debugValue\":\"GameTime{tick=42}\"") != std::string::npos);
     REQUIRE(singletons_response.find("\"value\":\"42\"") != std::string::npos);
+}
+
+TEST_CASE("debug server releases disconnected clients and rejects oversized requests") {
+    ashiato::Registry registry;
+    ashiato::DebugServerOptions options;
+    options.enabled = true;
+    options.max_clients = 1;
+    options.max_request_bytes = 256;
+    ashiato::DebugServer server(registry, options);
+    INFO(server.last_error());
+    REQUIRE(server.enabled());
+
+    int client = connect_client(server);
+    const std::string partial_request = "POST /graphql HTTP/1.1\r\nContent-Length: 10\r\n\r\n{}";
+    REQUIRE(send(client, partial_request.data(), partial_request.size(), 0) ==
+        static_cast<ssize_t>(partial_request.size()));
+    close(client);
+    server.poll();
+    REQUIRE(post_graphql(server, "{\"query\":\"query { serverName }\"}").find("200 OK") != std::string::npos);
+
+    client = connect_client(server);
+    const std::string oversized_request = "POST /graphql HTTP/1.1\r\nContent-Length: 1000\r\n\r\n";
+    REQUIRE(send(client, oversized_request.data(), oversized_request.size(), 0) ==
+        static_cast<ssize_t>(oversized_request.size()));
+    server.poll();
+    char byte = 0;
+    REQUIRE(recv(client, &byte, 1, 0) == 0);
+    close(client);
+    REQUIRE(post_graphql(server, "{\"query\":\"query { serverName }\"}").find("200 OK") != std::string::npos);
 }
 #endif

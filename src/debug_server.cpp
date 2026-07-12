@@ -4,11 +4,14 @@
 
 #include <cerrno>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <sstream>
+#include <type_traits>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -351,7 +354,7 @@ bool write_field_value(Registry& registry, Entity component, const ComponentFiel
         if (value.kind != JsonValue::Kind::Bool) {
             return false;
         }
-        *reinterpret_cast<bool*>(bytes + field.offset) = value.boolean;
+        std::memcpy(bytes + field.offset, &value.boolean, sizeof(value.boolean));
         return true;
     }
     if (field.type == registry.primitive_type(PrimitiveType::String)) {
@@ -375,25 +378,55 @@ bool write_field_value(Registry& registry, Entity component, const ComponentFiel
     if (value.kind != JsonValue::Kind::Number) {
         return false;
     }
+
+    const auto write_integer = [&](auto type) {
+        using T = decltype(type);
+        static_assert(std::is_integral<T>::value, "integer field writes require an integral type");
+        if (!std::isfinite(value.number) || std::trunc(value.number) != value.number) {
+            return false;
+        }
+        constexpr int value_bits = std::numeric_limits<T>::digits;
+        const double upper_bound = std::ldexp(1.0, value_bits);
+        const double lower_bound = std::is_signed<T>::value ? -upper_bound : 0.0;
+        if (value.number < lower_bound || value.number >= upper_bound) {
+            return false;
+        }
+        const T converted = static_cast<T>(value.number);
+        std::memcpy(bytes + field.offset, &converted, sizeof(converted));
+        return true;
+    };
+
+    const auto write_floating_point = [&](auto type) {
+        using T = decltype(type);
+        static_assert(std::is_floating_point<T>::value, "floating-point field writes require a floating-point type");
+        if (!std::isfinite(value.number) ||
+            value.number < static_cast<double>(std::numeric_limits<T>::lowest()) ||
+            value.number > static_cast<double>((std::numeric_limits<T>::max)())) {
+            return false;
+        }
+        const T converted = static_cast<T>(value.number);
+        std::memcpy(bytes + field.offset, &converted, sizeof(converted));
+        return true;
+    };
+
     if (field.type == registry.primitive_type(PrimitiveType::U8)) {
-        *reinterpret_cast<std::uint8_t*>(bytes + field.offset) = static_cast<std::uint8_t>(value.number);
+        return write_integer(std::uint8_t{});
     } else if (field.type == registry.primitive_type(PrimitiveType::I32)) {
-        *reinterpret_cast<std::int32_t*>(bytes + field.offset) = static_cast<std::int32_t>(value.number);
+        return write_integer(std::int32_t{});
     } else if (field.type == registry.primitive_type(PrimitiveType::U32)) {
-        *reinterpret_cast<std::uint32_t*>(bytes + field.offset) = static_cast<std::uint32_t>(value.number);
+        return write_integer(std::uint32_t{});
     } else if (field.type == registry.primitive_type(PrimitiveType::I64)) {
-        *reinterpret_cast<std::int64_t*>(bytes + field.offset) = static_cast<std::int64_t>(value.number);
+        return write_integer(std::int64_t{});
     } else if (field.type == registry.primitive_type(PrimitiveType::U64)) {
-        *reinterpret_cast<std::uint64_t*>(bytes + field.offset) = static_cast<std::uint64_t>(value.number);
+        return write_integer(std::uint64_t{});
     } else if (field.type == registry.primitive_type(PrimitiveType::F32)) {
-        *reinterpret_cast<float*>(bytes + field.offset) = static_cast<float>(value.number);
+        return write_floating_point(float{});
     } else if (field.type == registry.primitive_type(PrimitiveType::F64)) {
-        *reinterpret_cast<double*>(bytes + field.offset) = value.number;
+        return write_floating_point(double{});
     } else {
         (void)component;
         return false;
     }
-    return true;
 }
 
 const char* editable_field_type(Registry& registry, const ComponentField& field) {
@@ -431,8 +464,15 @@ const char* editable_field_type(Registry& registry, const ComponentField& field)
 }
 
 void append_field_value(std::ostringstream& out, Registry& registry, const ComponentField& field, const unsigned char* bytes) {
+    const auto read = [&](auto type) {
+        using T = decltype(type);
+        T value{};
+        std::memcpy(&value, bytes + field.offset, sizeof(value));
+        return value;
+    };
+
     if (field.type == registry.primitive_type(PrimitiveType::Bool)) {
-        out << (*reinterpret_cast<const bool*>(bytes + field.offset) ? "true" : "false");
+        out << (read(bool{}) ? "true" : "false");
     } else if (field.type == registry.primitive_type(PrimitiveType::String)) {
         std::string value;
         value.reserve(field.count);
@@ -443,22 +483,22 @@ void append_field_value(std::ostringstream& out, Registry& registry, const Compo
         }
         out << quoted(value);
     } else if (field.type == registry.primitive_type(PrimitiveType::U8)) {
-        out << quoted(std::to_string(*reinterpret_cast<const std::uint8_t*>(bytes + field.offset)));
+        out << quoted(std::to_string(read(std::uint8_t{})));
     } else if (field.type == registry.primitive_type(PrimitiveType::I32)) {
-        out << quoted(std::to_string(*reinterpret_cast<const std::int32_t*>(bytes + field.offset)));
+        out << quoted(std::to_string(read(std::int32_t{})));
     } else if (field.type == registry.primitive_type(PrimitiveType::U32)) {
-        out << quoted(std::to_string(*reinterpret_cast<const std::uint32_t*>(bytes + field.offset)));
+        out << quoted(std::to_string(read(std::uint32_t{})));
     } else if (field.type == registry.primitive_type(PrimitiveType::I64)) {
-        out << quoted(std::to_string(*reinterpret_cast<const std::int64_t*>(bytes + field.offset)));
+        out << quoted(std::to_string(read(std::int64_t{})));
     } else if (field.type == registry.primitive_type(PrimitiveType::U64)) {
-        out << quoted(std::to_string(*reinterpret_cast<const std::uint64_t*>(bytes + field.offset)));
+        out << quoted(std::to_string(read(std::uint64_t{})));
     } else if (field.type == registry.primitive_type(PrimitiveType::F32)) {
         std::ostringstream value;
-        value << *reinterpret_cast<const float*>(bytes + field.offset);
+        value << read(float{});
         out << quoted(value.str());
     } else if (field.type == registry.primitive_type(PrimitiveType::F64)) {
         std::ostringstream value;
-        value << *reinterpret_cast<const double*>(bytes + field.offset);
+        value << read(double{});
         out << quoted(value.str());
     } else {
         out << "null";
@@ -545,10 +585,14 @@ public:
         }
         accept_clients();
         std::size_t handled = 0;
-        for (std::size_t i = 0; i < clients_.size() && handled < options_.max_requests_per_poll;) {
+        for (std::size_t i = 0; i < clients_.size();) {
             Client& client = clients_[i];
-            read_client(client);
-            if (request_complete(client)) {
+            if (read_client(client) == ClientReadResult::Closed) {
+                close_socket(client.socket);
+                clients_.erase(clients_.begin() + static_cast<std::ptrdiff_t>(i));
+                continue;
+            }
+            if (handled < options_.max_requests_per_poll && request_complete(client)) {
                 if (request_method(client.buffer) == "OPTIONS") {
                     write_options_response(client.socket);
                 } else {
@@ -575,6 +619,11 @@ private:
         std::string buffer;
     };
 
+    enum class ClientReadResult {
+        Open,
+        Closed
+    };
+
     void accept_clients() {
         while (true) {
             Socket client = ::accept(listen_socket_, nullptr, nullptr);
@@ -584,12 +633,15 @@ private:
                 }
                 return;
             }
-            set_nonblocking(client);
+            if (clients_.size() >= options_.max_clients || !set_nonblocking(client)) {
+                close_socket(client);
+                continue;
+            }
             clients_.push_back(Client{client, {}});
         }
     }
 
-    void read_client(Client& client) {
+    ClientReadResult read_client(Client& client) {
         char chunk[4096];
         while (true) {
 #ifdef _WIN32
@@ -598,15 +650,37 @@ private:
             const ssize_t count = recv(client.socket, chunk, sizeof(chunk), 0);
 #endif
             if (count > 0) {
-                client.buffer.append(chunk, static_cast<std::size_t>(count));
+                const std::size_t received = static_cast<std::size_t>(count);
+                if (received > options_.max_request_bytes ||
+                    client.buffer.size() > options_.max_request_bytes - received) {
+                    return ClientReadResult::Closed;
+                }
+                client.buffer.append(chunk, received);
+                if (!request_size_within_limit(client.buffer)) {
+                    return ClientReadResult::Closed;
+                }
                 continue;
             }
-            if (count == 0 || would_block()) {
-                return;
+            if (count == 0) {
+                return ClientReadResult::Closed;
+            }
+            if (would_block()) {
+                return ClientReadResult::Open;
             }
             last_error_ = "failed to read debug client";
-            return;
+            return ClientReadResult::Closed;
         }
+    }
+
+    bool request_size_within_limit(const std::string& request) const {
+        const std::size_t header_end = request.find("\r\n\r\n");
+        if (header_end == std::string::npos) {
+            return request.size() < options_.max_request_bytes;
+        }
+        const std::size_t body_offset = header_end + 4U;
+        const std::size_t body_size = content_length(request);
+        return body_offset <= options_.max_request_bytes &&
+            body_size <= options_.max_request_bytes - body_offset;
     }
 
     static std::size_t content_length(const std::string& request) {

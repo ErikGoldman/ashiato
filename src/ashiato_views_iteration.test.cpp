@@ -143,6 +143,53 @@ TEST_CASE("stored access and optional views see entities added after view constr
     REQUIRE(registry.get<Position>(entity).x == 5);
 }
 
+TEST_CASE("stored access APIs refresh every component cache after storage creation") {
+    ashiato::Registry registry;
+    registry.register_component<Position>("Position");
+    registry.register_component<Velocity>("Velocity");
+    registry.register_component<Health>("Health");
+    registry.register_component<Active>("Active");
+
+    auto access_view = registry.view<const Position>().access<Velocity>().optional<Health>();
+    auto filtered_view = access_view.with_tags<const Active>();
+
+    const ashiato::Entity complete = registry.create();
+    const ashiato::Entity without_health = registry.create();
+    REQUIRE(registry.add<Position>(complete, Position{1, 0}) != nullptr);
+    REQUIRE(registry.add<Velocity>(complete, Velocity{2.0f, 0.0f}) != nullptr);
+    REQUIRE(registry.add<Health>(complete, Health{3}) != nullptr);
+    REQUIRE(registry.add<Active>(complete));
+    REQUIRE(registry.add<Position>(without_health, Position{4, 0}) != nullptr);
+    REQUIRE(registry.add<Velocity>(without_health, Velocity{5.0f, 0.0f}) != nullptr);
+    REQUIRE(registry.add<Active>(without_health));
+
+    REQUIRE(access_view.contains<Velocity>(complete));
+    REQUIRE(access_view.try_get<Velocity>(complete) != nullptr);
+    REQUIRE(access_view.get<Velocity>(complete).dx == 2.0f);
+    access_view.write<Velocity>(complete).dx = 6.0f;
+
+    int calls = 0;
+    filtered_view.each([&](auto& view, ashiato::Entity entity, const Position&) {
+        REQUIRE(view.template contains<Position>());
+        REQUIRE(view.template try_get<Position>() != nullptr);
+        REQUIRE(view.template get<Position>().x == registry.get<Position>(entity).x);
+        if (entity == complete) {
+            REQUIRE(view.template contains<Health>());
+            REQUIRE(view.template try_get<Health>() != nullptr);
+            REQUIRE(view.template get<Health>().value == 3);
+            view.template write<Health>().value = 7;
+        } else {
+            REQUIRE_FALSE(view.template contains<Health>());
+            REQUIRE(view.template try_get<Health>() == nullptr);
+        }
+        ++calls;
+    });
+
+    REQUIRE(calls == 2);
+    REQUIRE(registry.get<Velocity>(complete).dx == 6.0f);
+    REQUIRE(registry.get<Health>(complete).value == 7);
+}
+
 TEST_CASE("stored view matching indices sees entities added after view construction") {
     ashiato::Registry registry;
     registry.register_component<Position>("Position");

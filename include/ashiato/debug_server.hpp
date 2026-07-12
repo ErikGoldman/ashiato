@@ -50,6 +50,8 @@ struct DebugServerOptions {
     std::uint16_t port = 0;
     std::size_t max_requests_per_poll = 16;
     std::string name;
+    std::size_t max_clients = 16;
+    std::size_t max_request_bytes = std::size_t{64} * 1024U;
 };
 
 class DebugServer {
